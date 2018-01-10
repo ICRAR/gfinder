@@ -348,7 +348,7 @@ def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
                            strides=[1, 2, 2, 1],
                            padding='SAME')      #Consistent shape
 
-    #Apply ReLU
+    #Apply activation function
     layer = tf.nn.relu(layer)
 
     #Return the layer (and also the weights for inspection)
@@ -379,7 +379,7 @@ def flatten_layer(layer):
 def new_fc_layer(prev_layer,         #the previous layer (input to this layer)
                  num_inputs,         #number of images to be input
                  num_outputs,        #number to be output
-                 use_ReLU,
+                 use_activation_function,
                  fc_index):          #for unique variable naming
 
     #Stringify index
@@ -393,8 +393,8 @@ def new_fc_layer(prev_layer,         #the previous layer (input to this layer)
     #the input and weights, and then add the bias-values
     layer = tf.matmul(prev_layer, weights) + biases
 
-    #Apply ReLU
-    if use_ReLU:
+    #Apply activation function if requested
+    if use_activation_function:
         layer = tf.nn.relu(layer)
 
     return layer
@@ -459,14 +459,14 @@ def new_graph(id,             #Unique identifier for saving the graph
     layer_fc0 = new_fc_layer(prev_layer=layer_flat,
                              num_inputs=num_features,
                              num_outputs=fc_size,
-                             use_ReLU=True,
+                             use_activation_function=True,
                              fc_index=0)
     print("\t\t-Fully connected 0: " + str(layer_fc0))
 
     layer_fc1 = new_fc_layer(prev_layer=layer_fc0,
                              num_inputs=fc_size,
                              num_outputs=2,
-                             use_ReLU=False,
+                             use_activation_function=False,
                              fc_index=1)
     print("\t\t-Fully connected 1: " + str(layer_fc1))
 

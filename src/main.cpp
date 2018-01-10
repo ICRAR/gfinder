@@ -387,6 +387,49 @@ PyObject *get_supervised_unit(kdu_uint32 array[], int width, int height,
   return training_unit;
 }
 
+void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, int success,
+                          int digits, int successful_predictions, int units_fed){
+    //Field names are read as: was (T = correct/F = incorrect)
+    //because prediction was (+ = gal/ - = noise)
+    cout << "\t\t+";
+    for(int i = 0; i < 7; i++){
+        cout << std::setfill('-') << std::setw(7) << "+";
+    }
+    cout << "\n";
+
+    cout << "\t\t| PRED | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "F+" << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "F-" << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "F" << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "T+" << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "T-" << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "T" << " | "
+      << ((success == 1) ? " SUCCESS\n" : " FAILURE\n");
+    cout << std::resetiosflags(std::ios::adjustfield);
+
+    cout << "\t\t+";
+    for(int i = 0; i < 7; i++){
+        cout << std::setfill('-') << std::setw(7) << "+";
+    }
+    cout << "\n";
+
+    cout << "\t\t| NUMs | "
+      << std::setfill(' ') << std::setw(digits) << std::left << f_pos << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << f_neg << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << f_pos + f_neg << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << t_pos << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << t_neg << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg << " | "
+      << " ACC: " << 100*(double)successful_predictions/(double)units_fed << "%\n";
+    cout << std::resetiosflags(std::ios::adjustfield);
+
+    cout << "\t\t+";
+    for(int i = 0; i < 7; i++){
+        cout << std::setfill('-') << std::setw(7) << "+";
+    }
+    cout << "\n";
+}
+
 //Called when training a graph is specified. Note a reference to the jpx source
 //is taken - this prevents segmentation fault (same with codestream)
 void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
@@ -432,7 +475,15 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
   int units_fed = 0;
   int units_expected = tolerated_labels.size();
   int digits = units_expected > 0 ? (int) log10 ((double) units_expected) + 1 : 1;
+  digits = (digits < 4) ? 4 : digits;
   int successful_predictions = 0; //How many successful predictions have been made during training
+
+  //More detailed tracking (false/true negatives/positives
+  //where positive is galaxy and negative is noise)
+  int f_pos = 0;
+  int f_neg = 0;
+  int t_pos = 0;
+  int t_neg = 0;
 
   //Decompress areas given by labels with a given tolerance (labels mark only the
   //frequency point at which the galaxy is strongest, but typically they are still
@@ -591,36 +642,20 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     cout << "\t\t-y: [" << region.pos.y << ", " << region.pos.y + region.size.y << "]\n";
     cout << "\t\t-f: " << component_index << "\n";
 
-    //Report the kind of failure
+    //Track and report the kind of failure
     if(tolerated_labels[l].isGalaxy){
-      if(success == 1){
-        cout << "\t\t-true: GALAXY\n\t\t-pred: GALAXY\n";
-      }else{
-        cout << "\t\t-true: GALAXY\n\t\t-pred: NOISE\n";
-      }
+      if(success == 1){ t_pos++; }else{ f_pos++; }
     }else{
-      if(success == 1){
-        cout << "\t\t-true: NOISE\n\t\t-pred: NOISE\n";
-      }else{
-        cout << "\t\t-true: NOISE\n\t\t-pred: GALAXY\n";
-      }
+      if(success == 1){ t_neg++; }else{ f_neg++; }
     }
-    cout << "\t\t-" << std::setfill('0') << std::setw(digits)
-      << successful_predictions << " successes, "
-      << std::setfill('0') << std::setw(digits)
-      << units_fed - successful_predictions << " failures\n";
-
-    //Report training accuracy
-    cout << "\t\t-current batch " << ((updateModel) ? "training" : "validation") << " accuracy "
-      << 100*(double)successful_predictions/(double)units_fed << "%\n";
+    print_results_table(t_pos, f_pos, t_neg, f_neg, success, digits, successful_predictions, units_fed);
   }
 
   //At this point all valid training units have been fed into the network
-  cout << std::setfill('0') << std::setw(digits) << units_fed
+  cout << units_fed
     << "/" << units_expected
     << ((updateModel) ? " training" : " validation")
-    << " units found valid (in bounds) and fed into network with batch accuracy of "
-    << 100*(double)successful_predictions/(double)units_fed << "%\n";
+    << " units found in image bounds and fed into network\n";
 }
 
 //Converts 1D kdu_uint32 to 1D numpy array with dimension info for passing to python
