@@ -180,16 +180,16 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
 }
 
 //Creates a set of false labels
-void generate_false_labels(vector<label> & true_labels, int start_component_index,
+void generate_false_labels(vector<label> & labels, int start_component_index,
                       int final_component_index){
   //False labels won't be in the components where there are true labels. Find
-  //these components
+  //these components where false labels can be found (no true label components)
   vector<int> components;
   for(int i = start_component_index; i <= final_component_index; i++){
     bool true_label_component = false; //Assume component doesn't have a true label in it
-    for(int j = 0; j < true_labels.size(); j++){
+    for(int j = 0; j < labels.size(); j++){
       //If component appears in true labels then don't use it to find false labels
-      if(i == true_labels[j].f){
+      if(i == labels[j].f){
         true_label_component = true;
         break;  //No point looking further
       }
@@ -201,30 +201,36 @@ void generate_false_labels(vector<label> & true_labels, int start_component_inde
     }
   }
 
-  //Create a RNG
-  srand(0);
+  //If not a single free component was found then return
+  if(components.size() == 0){
+    //TODO, better solution
+    cout << "Error: there is not a single component in the supplied file without a galaxy in it, and thus no frame to generate noise images from!\n";
+  }else{
+    //Create a RNG
+    srand(0);
 
-  //Spacing to find false labels at to ensure that the correct number are found
-  double labels_per_comp = (double)true_labels.size()/(double)components.size();
-  int spacing = ceil(1.0/labels_per_comp);
-  for(int i = 0; i < components.size(); i += spacing){
-    for(int j = 0; j < ceil(labels_per_comp); j++){
-      //Randomly generate a label TODO, remove hardcode of resolution
-      label l;
-      l.tlx = rand()%3599;  //x, y of top left corner
-      l.tly = rand()%3599;
-      l.brx = l.tlx + 100;  //x, y of bottom right corner (always 100x100)
-      l.bry = l.tly + 100;
-      l.f = components[i];  //Save the frequency component
+    //Spacing to find false labels at to ensure that the correct number are found
+    double labels_per_comp = (double)labels.size()/(double)components.size();
+    int spacing = ceil(1.0/labels_per_comp);
+    for(int i = 0; i < components.size(); i += spacing){
+      for(int j = 0; j < ceil(labels_per_comp); j++){
+        //Randomly generate a label TODO, remove hardcode of resolution
+        label l;
+        l.tlx = rand()%3599;  //x, y of top left corner
+        l.tly = rand()%3599;
+        l.brx = l.tlx + 100;  //x, y of bottom right corner (always 100x100)
+        l.bry = l.tly + 100;
+        l.f = components[i];  //Save the frequency component
 
-      //If a label is being generated here then it doesn't hold a galaxy
-      l.isGalaxy = false;
+        //If a label is being generated here then it doesn't hold a galaxy
+        l.isGalaxy = false;
 
-      //Noise has no rotation applied
-      l.rot = 0;
+        //Noise has no rotation applied
+        l.rot = 0;
 
-      //Add to label list
-      true_labels.push_back(l);
+        //Add to label list
+        labels.push_back(l);
+      }
     }
   }
 }
@@ -388,44 +394,68 @@ PyObject *get_supervised_unit(kdu_uint32 array[], int width, int height,
 }
 
 void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, int success,
-                          int digits, int successful_predictions, int units_fed){
+                          int digits){
     //Field names are read as: was (T = correct/F = incorrect)
     //because prediction was (+ = gal/ - = noise)
     cout << "\t\t+";
-    for(int i = 0; i < 7; i++){
-        cout << std::setfill('-') << std::setw(7) << "+";
+    cout << std::setfill('-') << std::setw(14) << "+";
+    for(int i = 0; i < 3; i++){
+        cout << std::setfill('-') << std::setw(9) << "+";
     }
     cout << "\n";
 
-    cout << "\t\t| PRED | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "F+" << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "F-" << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "F" << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "T+" << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "T-" << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "T" << " | "
-      << ((success == 1) ? " SUCCESS\n" : " FAILURE\n");
+    cout << "\t\t| MARK | PRED | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "GALAXY" << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "NOISE" << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << "TOTALS" << " |\n";
     cout << std::resetiosflags(std::ios::adjustfield);
 
     cout << "\t\t+";
-    for(int i = 0; i < 7; i++){
-        cout << std::setfill('-') << std::setw(7) << "+";
+    cout << std::setfill('-') << std::setw(14) << "+";
+    for(int i = 0; i < 3; i++){
+        cout << std::setfill('-') << std::setw(9) << "+";
     }
     cout << "\n";
 
-    cout << "\t\t| NUMs | "
-      << std::setfill(' ') << std::setw(digits) << std::left << f_pos << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << f_neg << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << f_pos + f_neg << " | "
+    cout << "\t\t|     CORRECT | "
       << std::setfill(' ') << std::setw(digits) << std::left << t_pos << " | "
       << std::setfill(' ') << std::setw(digits) << std::left << t_neg << " | "
       << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg << " | "
-      << " ACC: " << 100*(double)successful_predictions/(double)units_fed << "%\n";
+      << (success == 1 ? "+1 (CORRECT)\n" : "\n");
     cout << std::resetiosflags(std::ios::adjustfield);
 
     cout << "\t\t+";
-    for(int i = 0; i < 7; i++){
-        cout << std::setfill('-') << std::setw(7) << "+";
+    cout << std::setfill('-') << std::setw(14) << "+";
+    for(int i = 0; i < 3; i++){
+        cout << std::setfill('-') << std::setw(9) << "+";
+    }
+    cout << "\n";
+
+    cout << "\t\t|   INCORRECT | "
+      << std::setfill(' ') << std::setw(digits) << std::left << f_pos << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << f_neg << " | "
+      << std::setfill(' ') << std::setw(digits) << std::left << f_pos + f_neg << " | "
+      << (success != 1 ? "+1 (INCORRECT)\n" : "\n");
+    cout << std::resetiosflags(std::ios::adjustfield);
+
+    cout << "\t\t+";
+    cout << std::setfill('-') << std::setw(14) << "+";
+    for(int i = 0; i < 3; i++){
+        cout << std::setfill('-') << std::setw(9) << "+";
+    }
+    cout << "\n";
+
+    cout << "\t\t|      TOTALS | "
+      << std::setfill(' ') << std::setw(digits) << std::left << t_pos + f_pos << " | "  //Galaxy guesses
+      << std::setfill(' ') << std::setw(digits) << std::left << f_neg + t_neg << " | "  //Noise guesses
+      << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg + f_pos + f_neg << " | "
+      << " ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%\n";
+    cout << std::resetiosflags(std::ios::adjustfield);
+
+    cout << "\t\t+";
+    cout << std::setfill('-') << std::setw(14) << "+";
+    for(int i = 0; i < 3; i++){
+        cout << std::setfill('-') << std::setw(9) << "+";
     }
     cout << "\n";
 }
@@ -475,8 +505,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
   int units_fed = 0;
   int units_expected = tolerated_labels.size();
   int digits = units_expected > 0 ? (int) log10 ((double) units_expected) + 1 : 1;
-  digits = (digits < 4) ? 4 : digits;
-  int successful_predictions = 0; //How many successful predictions have been made during training
+  digits = (digits < 6) ? 6 : digits; //To hold the word 'galaxy'
 
   //More detailed tracking (false/true negatives/positives
   //where positive is galaxy and negative is noise)
@@ -631,13 +660,11 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     }else{
       cout << "Error: embedded python3 training function returning incorrectly\n";
     }
-    //Increment successes
-    successful_predictions += success;
 
     //Announce and track the number of training units fed
     units_fed++;
     cout << "\t-" << ((updateModel) ? "training unit " : "validation unit ")
-      << units_fed << "/~" << units_expected <<  " fed to network:\n";
+      << t_pos + f_pos + t_neg + f_neg << "/~" << units_expected <<  " fed to network:\n";
     cout << "\t\t-x: [" << region.pos.x << ", " << region.pos.x + region.size.x << "]\n";
     cout << "\t\t-y: [" << region.pos.y << ", " << region.pos.y + region.size.y << "]\n";
     cout << "\t\t-f: " << component_index << "\n";
@@ -648,11 +675,11 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     }else{
       if(success == 1){ t_neg++; }else{ f_neg++; }
     }
-    print_results_table(t_pos, f_pos, t_neg, f_neg, success, digits, successful_predictions, units_fed);
+    print_results_table(t_pos, f_pos, t_neg, f_neg, success, digits);
   }
 
   //At this point all valid training units have been fed into the network
-  cout << units_fed
+  cout << t_pos + f_pos + t_neg + f_neg
     << "/" << units_expected
     << ((updateModel) ? " training" : " validation")
     << " units found in image bounds and fed into network\n";
