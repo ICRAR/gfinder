@@ -6,6 +6,7 @@
 
 //C++ standard includes
 #include <iostream>     //For cout
+#include <iomanip>      //For pretty printing
 #include <sstream>      //For parsing command line arguments
 #include <string>       //For xtoy conversions
 #include <algorithm>    //For min
@@ -200,29 +201,31 @@ void generate_false_labels(vector<label> & true_labels, int start_component_inde
     }
   }
 
-  //Create an RNG
+  //Create a RNG
   srand(0);
 
   //Spacing to find false labels at to ensure that the correct number are found
-  int spacing = max((int)floor((double)components.size()/(double)true_labels.size())
-                    , 1);
+  double labels_per_comp = (double)true_labels.size()/(double)components.size();
+  int spacing = ceil(1.0/labels_per_comp);
   for(int i = 0; i < components.size(); i += spacing){
-    //TODO, remove hardcode of resolution
-    label l;
-    l.tlx = rand()%3599;  //x, y of top left corner
-    l.tly = rand()%3599;
-    l.brx = l.tlx + 100;  //x, y of bottom right corner (always 100x100)
-    l.bry = l.tly + 100;
-    l.f = components[i];  //Save the frequency component
+    for(int j = 0; j < ceil(labels_per_comp); j++){
+      //Randomly generate a label TODO, remove hardcode of resolution
+      label l;
+      l.tlx = rand()%3599;  //x, y of top left corner
+      l.tly = rand()%3599;
+      l.brx = l.tlx + 100;  //x, y of bottom right corner (always 100x100)
+      l.bry = l.tly + 100;
+      l.f = components[i];  //Save the frequency component
 
-    //If a label is being generated here then it doesn't hold a galaxy
-    l.isGalaxy = false;
+      //If a label is being generated here then it doesn't hold a galaxy
+      l.isGalaxy = false;
 
-    //Noise has no rotation applied
-    l.rot = 0;
+      //Noise has no rotation applied
+      l.rot = 0;
 
-    //Add to label list
-    true_labels.push_back(l);
+      //Add to label list
+      true_labels.push_back(l);
+    }
   }
 }
 
@@ -428,6 +431,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
   //Track the number of training units fed thus far and the number expected to be fed
   int units_fed = 0;
   int units_expected = tolerated_labels.size();
+  int digits = units_expected > 0 ? (int) log10 ((double) units_expected) + 1 : 1;
   int successful_predictions = 0; //How many successful predictions have been made during training
 
   //Decompress areas given by labels with a given tolerance (labels mark only the
@@ -590,27 +594,30 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     //Report the kind of failure
     if(tolerated_labels[l].isGalaxy){
       if(success == 1){
-        cout << "\t\t-correctly predicted galaxy\n";
+        cout << "\t\t-true: GALAXY\n\t\t-pred: GALAXY\n";
       }else{
-        cout << "\t\t-incorrectly predicted not galaxy\n";
+        cout << "\t\t-true: GALAXY\n\t\t-pred: NOISE\n";
       }
     }else{
       if(success == 1){
-        cout << "\t\t-correctly predicted not galaxy\n";
+        cout << "\t\t-true: NOISE\n\t\t-pred: NOISE\n";
       }else{
-        cout << "\t\t-incorrectly predicted galaxy\n";
+        cout << "\t\t-true: NOISE\n\t\t-pred: GALAXY\n";
       }
     }
+    cout << "\t\t-" << std::setfill('0') << std::setw(digits)
+      << successful_predictions << " successes, "
+      << std::setfill('0') << std::setw(digits)
+      << units_fed - successful_predictions << " failures\n";
 
     //Report training accuracy
     cout << "\t\t-current batch " << ((updateModel) ? "training" : "validation") << " accuracy "
-      << 100*(double)successful_predictions/(double)units_fed << "% ("
-      << successful_predictions << " successes, " << units_fed - successful_predictions
-      << " failures)\n";
+      << 100*(double)successful_predictions/(double)units_fed << "%\n";
   }
 
   //At this point all valid training units have been fed into the network
-  cout << units_fed << "/" << units_expected
+  cout << std::setfill('0') << std::setw(digits) << units_fed
+    << "/" << units_expected
     << ((updateModel) ? " training" : " validation")
     << " units found valid (in bounds) and fed into network with batch accuracy of "
     << 100*(double)successful_predictions/(double)units_fed << "%\n";
@@ -1010,9 +1017,8 @@ int main(int argc, char **argv){
                                     start_component_index,
                                     final_component_index);
     int num_true_labels = labels.size();
-    cout << num_true_labels/2 << " galaxy labels found in inclusive component range ["
-      << start_component_index << ", " << final_component_index << "], "
-      << num_true_labels << " with rotation\n";
+    cout << num_true_labels << " galaxy labels found in inclusive component range ["
+      << start_component_index << ", " << final_component_index << "]\n";
 
     //Now add some false labels. False labels won't be where a galaxy is spatially,
     //so get 100x100's that aren't in the galaxy components. Get as many false labels
