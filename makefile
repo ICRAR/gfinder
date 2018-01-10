@@ -31,7 +31,7 @@ KDU_LIBS =  -lkdu_aux -lkdu
 #Embedded Python	--------------------------------------------------------------
 #Where to find python installation (which should include Python.h, otherwise must
 #'sudo apt-get install python3-dev' or similar)
-PY_PATH = /usr/include/python3.5m
+PY_PATH = ./libs/python3.5m
 PY_INCLUDES = -I$(PY_PATH)
 
 PY_LIBS = -lpython3.5m
