@@ -10,6 +10,9 @@ libs/v7_8-01265L/*
 #Macintosh reference files
 */.DS_store
 
+#Python config files can go
+*.pyc
+
 #Compiled object files
 obj/*
 
