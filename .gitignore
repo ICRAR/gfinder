@@ -1,41 +1,29 @@
 #Remember to update folders that have been tracked after adding to gitignore with
 #git rm -r --cached <folder>
 
-libs/v7_8-01265L/*
 #Proprietary KDU SDK
+libs/v7_8-01265L/*
 
-!libs/.gitkeep
-#But keep the libs folder
+#But keep gitkeeps to enforce directory folder structure
+!*/.gitkeep
 
-*/.DS_store
 #Macintosh reference files
+*/.DS_store
 
-obj/*
 #Compiled object files
+obj/*
 
-!obj/.gitkeep
-#But keep object folder
-
-gfinder
 #Linked exe
+gfinder
 
-__pycache__/*
 #Pycache files
+__pycache__/*
 
+#All output files
 output/*
-#All output
 
-!output/.gitkeep
-#But keep output folder
-
-graphs/*
 #Network graphs
+graphs/*
 
-!graphs/.gitkeep
-#But keep graphs folder
-
-logs/*
 #Network logs
-
-!logs/.gitkeep
-#But keep logs folder
+logs/*

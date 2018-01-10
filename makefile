@@ -37,17 +37,12 @@ PY_INCLUDES = -I$(PY_PATH)
 PY_LIBS = -lpython3.5m
 
 #-------------------------------------------------------------------------------
-#Rapid XML	--------------------------------------------------------------------
-R_XML_PATH = ./libs/rapidxml
-R_XML_INCLUDES = -I$(R_XML_PATH)
-
-#-------------------------------------------------------------------------------
 
 #Add all libraries to compile with reference to
 LIBS = $(KDU_LFLAGS) $(KDU_LIBS) $(PY_LIBS)
 
 #Add all include locations to compile with reference to
-INCLUDES = $(KDU_INCLUDES) $(PY_INCLUDES) $(R_XML_INCLUDES)
+INCLUDES = $(KDU_INCLUDES) $(PY_INCLUDES)
 
 #Directories to find .cpp & .o files
 SRC_DIR = src
