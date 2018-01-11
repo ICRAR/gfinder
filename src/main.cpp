@@ -439,7 +439,7 @@ PyObject *get_supervised_batch( vector<kdu_uint32*> image_data_batch,
     image_data_batch_py,
     label_batch_py,
     graph_name,
-    (update_model ? 0 : 1)
+    (update_model ? 1 : 0)
   );
 
   return supervised_batch;

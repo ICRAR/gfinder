@@ -75,7 +75,7 @@ def save_array_as_fig(img_array, name):
 def use_supervised_batch(   image_data_batch,
                             label_batch,
                             graph_name,
-                            update_model):
+                            optimise_and_save):
     width = 30
     height = 30
     batch_size = len(image_data_batch)
@@ -106,10 +106,13 @@ def use_supervised_batch(   image_data_batch,
     #Create a unitary feeder dictionary
     feed_dict = {'images:0': image_input, 'labels:0': label_input}
 
-    #Only optimise the graph if in training mode
-    if update_model == 1:
+    #Only optimise & save the graph if in training mode
+    if optimise_and_save == 1:
         #Feed into the network so it can 'learn' by running the adam optimiser
         sess.run('Adam', feed_dict=feed_dict)
+
+        #Save the slightly more trained graph if in training mode
+        update_model(graph_name, sess, saver)
 
     #print("\t-cost = " + str(sess.run('Mean:0', feed_dict=feed_dict)) + "\n")
 
@@ -127,10 +130,6 @@ def use_supervised_batch(   image_data_batch,
     successes = []
     for i in range(0, batch_size):
         successes.append(trues[i] == preds[i])
-
-    #Save the slightly more trained graph if in training mode
-    if update_model == 1:
-        update_model(graph_name, sess, saver)
 
     #Close tensorflow session
     sess.close()
