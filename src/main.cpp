@@ -698,7 +698,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     //Announce and track the number of training units fed
     units_fed++;
     cout << "\t-" << ((updateModel) ? "training unit " : "validation unit ")
-      << t_pos + f_pos + t_neg + f_neg << "/~" << units_expected <<  " fed to network:\n";
+      << t_pos + f_pos + t_neg + f_neg + 1 << "/~" << units_expected <<  " fed to network:\n";
     cout << "\t\t-x: [" << region.pos.x << ", " << region.pos.x + region.size.x << "]\n";
     cout << "\t\t-y: [" << region.pos.y << ", " << region.pos.y + region.size.y << "]\n";
     cout << "\t\t-f: " << component_index << "\n";
@@ -1121,10 +1121,6 @@ int main(int argc, char **argv){
     //as true labels
     generate_false_labels(labels, start_component_index, final_component_index);
     cout << labels.size() - num_true_labels << " noise labels generated\n";
-
-    for(int i = 0; i < num_true_labels; i++){
-      labels.erase(labels.begin());
-    }
 
     //Note jpx_src required for metadata reads and codestream required for
     //image decompression. The final argument specifies if the model should

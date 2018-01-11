@@ -13,7 +13,7 @@ if not hasattr(sys, 'argv'):
 import os                           #For file reading and warning suppression
 import shutil                       #For directory deletion
 import numpy as np                  #For transforming blocks
-import matplotlib.pyplot as plt     #For visualisation
+#import matplotlib.pyplot as plt     #For visualisation
 import tensorflow as tf             #For deep learning
 import math                         #For logs
 import time                         #For debugging with catchup
@@ -101,7 +101,7 @@ def use_training_unit(  np_array,
         image_input = np.rot90(image_input, k=3, axes=(1, 2))
 
     #Save a copy of the graph if required
-    save_array_as_fig(image_input, "test")
+    #save_array_as_fig(image_input, "test")
 
     #Make label conform to placeholder dimensions
     label_array = [0, 0]                            #One hot encoding
