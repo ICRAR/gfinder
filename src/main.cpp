@@ -179,57 +179,91 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
   }while(child.exists());
 }
 
-//Creates a set of false labels
-void generate_false_labels(vector<label> & labels, int start_component_index,
-                      int final_component_index){
-  //False labels won't be in the components where there are true labels. Find
-  //these components where false labels can be found (no true label components)
-  vector<int> components;
-  for(int i = start_component_index; i <= final_component_index; i++){
-    bool true_label_component = false; //Assume component doesn't have a true label in it
-    for(int j = 0; j < labels.size(); j++){
-      //If component appears in true labels then don't use it to find false labels
-      if(i == labels[j].f){
-        true_label_component = true;
-        break;  //No point looking further
-      }
-    }
+//A helper that checks if two labels (typically an existing galaxy and a generated
+//noise label are overlapping)
+bool labels_intersect(label a, label b){
+  //tlx = left
+  //brx = right
+  //tly = top
+  //bry = bottom
+  return !( a.tlx > b.brx ||
+            a.brx < b.tlx ||
+            a.tly > b.bry ||
+            a.bry < b.tly);
+}
 
-    //If component can be used then add
-    if(!true_label_component){
-      components.push_back(i);
-    }
-  }
+//Creates a set of false labels
+void generate_false_labels( vector<label> & labels, int start_component_index,
+                            int final_component_index){
+  //Range of components
+  int range = final_component_index - start_component_index + 1; //+1 because inclusive
+  //Required number of noise labels to be found
+  int req = labels.size();
+  //The width and height of galaxy labels
+  int w = labels[0].brx - labels[0].tlx;
+  int h = labels[0].bry - labels[0].tly;
 
   //If not a single free component was found then return
-  if(components.size() == 0){
-    //TODO, better solution
-    cout << "Error: there is not a single component in the supplied file without a galaxy in it, and thus no frame to generate noise images from!\n";
+  if(range == 0){
+    cout << "Error: cannot find noise labels over a component range of zero\n";
   }else{
-    //Create a RNG
-    srand(0);
+    //Calculate the number of noise labels to be found per component
+    double labels_per_component = ceil((double)req/(double)range);
 
-    //Spacing to find false labels at to ensure that the correct number are found
-    double labels_per_comp = (double)labels.size()/(double)components.size();
-    int spacing = ceil(1.0/labels_per_comp);
-    for(int i = 0; i < components.size(); i += spacing){
-      for(int j = 0; j < ceil(labels_per_comp); j++){
-        //Randomly generate a label TODO, remove hardcode of resolution
-        label l;
-        l.tlx = rand()%3599;  //x, y of top left corner
-        l.tly = rand()%3599;
-        l.brx = l.tlx + 100;  //x, y of bottom right corner (always 100x100)
-        l.bry = l.tly + 100;
-        l.f = components[i];  //Save the frequency component
+    //Go over every component and generate the required labels randomly from
+    //areas that don't have a galaxy in them
+    int noise_labels_generated = 0;
+    for(int i = start_component_index; i <= final_component_index; i++){
+      //If enough galaxies have been found then finish
+      if(noise_labels_generated >= req){
+        break;
+      }
 
-        //If a label is being generated here then it doesn't hold a galaxy
-        l.isGalaxy = false;
+      //Find all true labels in this component
+      vector<label> galaxies;
+      for(int j = 0; j < labels.size(); j++){
+        if(labels[j].f == i){
+          galaxies.push_back(labels[j]);
+        }
+      }
 
-        //Noise has no rotation applied
-        l.rot = 0;
+      //A random number generator will be required
+      srand(0); //Seed
 
-        //Add to label list
-        labels.push_back(l);
+      //In each component i, find the correct number of labels (calculated earlier)
+      //ensuring that they don't intersect with the galaxies in this label
+      for(int j = 0; j < labels_per_component; j++){
+        //TODO: don't do trial and error method and scutinuse overlap more carefully,
+        //perhaps within a component tolerance (galaxies bleed through components).
+        //Sort galaxies vector to reduce from O(n^2 + n)
+        //to O(nlogn + n). Don't hardcode 3600x3600 resolution
+
+        //Generate a random noise label
+        label noise;
+        noise.tlx       = rand()%3599;
+        noise.tly       = rand()%3599;
+        noise.brx       = noise.tlx + w;
+        noise.bry       = noise.tly + h;
+        noise.isGalaxy  = false;
+        noise.f         = i;
+        noise.rot       = 0;
+
+        //Does the noise label overlap with any galaxy label? If so then retry
+        bool overlap = false;
+        for(int k = 0; k < galaxies.size(); k++){
+          if(labels_intersect(galaxies[k], noise)){
+            overlap = true;
+            break;
+          }
+        }
+
+        //If there was no overlap then add, otherwise try again
+        if(overlap){
+          j--;
+        }else{
+          labels.push_back(noise);
+          noise_labels_generated++;
+        }
       }
     }
   }
@@ -421,7 +455,7 @@ void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, int succes
       << std::setfill(' ') << std::setw(digits) << std::left << t_pos << " | "
       << std::setfill(' ') << std::setw(digits) << std::left << t_neg << " | "
       << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg << " | "
-      << (success == 1 ? "+1 (CORRECT)\n" : "\n");
+      << (success == 1 ? " +1 (CORRECT)\n" : "\n");
     cout << std::resetiosflags(std::ios::adjustfield);
 
     cout << "\t\t+";
@@ -435,7 +469,7 @@ void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, int succes
       << std::setfill(' ') << std::setw(digits) << std::left << f_pos << " | "
       << std::setfill(' ') << std::setw(digits) << std::left << f_neg << " | "
       << std::setfill(' ') << std::setw(digits) << std::left << f_pos + f_neg << " | "
-      << (success != 1 ? "+1 (INCORRECT)\n" : "\n");
+      << (success != 1 ? " +1 (INCORRECT)\n" : "\n");
     cout << std::resetiosflags(std::ios::adjustfield);
 
     cout << "\t\t+";
@@ -457,7 +491,7 @@ void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, int succes
     for(int i = 0; i < 3; i++){
         cout << std::setfill('-') << std::setw(9) << "+";
     }
-    cout << "\n";
+    cout << "\n\n";
 }
 
 //Called when training a graph is specified. Note a reference to the jpx source
@@ -1087,6 +1121,10 @@ int main(int argc, char **argv){
     //as true labels
     generate_false_labels(labels, start_component_index, final_component_index);
     cout << labels.size() - num_true_labels << " noise labels generated\n";
+
+    for(int i = 0; i < num_true_labels; i++){
+      labels.erase(labels.begin());
+    }
 
     //Note jpx_src required for metadata reads and codestream required for
     //image decompression. The final argument specifies if the model should
