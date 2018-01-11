@@ -73,9 +73,6 @@ struct label{
   int f; //FREQ or z-axis coordinate of rectangle
 
   bool isGalaxy;  //Does this label represent a galaxy
-
-  int rot;  //Images are rotated and fed to the network, this specifies
-            //the rotation in degrees
 };
 
 //----------------------------------------------------------------------------//
@@ -162,9 +159,6 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
 
           //Only acknowledge if within component range (inclusive)
           if(l.f >= start_component_index && l.f <= final_component_index){
-            //Rotations supported but not used here due to surplus of data
-            l.rot = 0;
-
             //"Your labels will make a fine addition to my ... collection"
             labels.push_back(l);
           }
@@ -250,7 +244,6 @@ void generate_false_labels( vector<label> & labels, int start_component_index,
         noise.bry       = noise.tly + h;
         noise.isGalaxy  = false;
         noise.f         = i;
-        noise.rot       = 0;
 
         //Does the noise label overlap with any galaxy label? If so then retry
         bool overlap = false;
