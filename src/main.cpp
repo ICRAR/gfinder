@@ -523,7 +523,7 @@ void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, vector<int
     << std::setfill(' ') << std::setw(digits) << std::left << t_pos + f_pos << " | "  //Galaxy guesses
     << std::setfill(' ') << std::setw(digits) << std::left << f_neg + t_neg << " | "  //Noise guesses
     << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg + f_pos + f_neg << " | "
-    << " TOTAL ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%\n";
+    << " SESSION ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%\n";
   cout << std::resetiosflags(std::ios::adjustfield);
 
   cout << "\t\t+";
@@ -583,7 +583,7 @@ void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
 
   //Announce and track the number of training units fed
   cout << "\t-" << t_pos + f_pos + t_neg + f_neg << "/" << units_expected
-    << ((updateModel) ? " training units " : " validation units ") << " fed to network:\n";
+    << ((updateModel) ? " training units " : " validation units ") << "fed to network:\n";
   print_results_table(t_pos, f_pos, t_neg, f_neg, successes, digits);
 }
 
