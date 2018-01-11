@@ -401,99 +401,179 @@ void end_embedded_python(){
   Py_Finalize();
 }
 
-//Converts 1D kdu_uint32 to 1D numpy array with dimension info for passing to python
-//for training purposes
-PyObject *get_supervised_unit(kdu_uint32 array[], int width, int height,
-                            bool isGalaxy, int rot, char *graph_name)
-{
-  //Dimension of array
-  npy_intp dim = width*height;
+//Converts a series of kdu_uint32 arrays and labels into a supervised batch that
+//can be fed into python
+PyObject *get_supervised_batch( vector<kdu_uint32*> image_data_batch,
+                                vector<bool> label_batch,
+                                char *graph_name,
+                                bool update_model){
+  //A supervised batch is a list of 1D image data arrays, a list of labels, and
+  //a graph name
 
-  //Build value that can be passed to python function. Value is a 1 dimensional
-  //w x h array of uint32s with the dimensions and spacing info appended as a tuple
-  PyObject* training_unit = Py_BuildValue("(O, i, i, i, i, s)",
-    PyArray_SimpleNewFromData (
-                                1,
-                                &dim,
-                                NPY_UINT32,
-                                (void *)array
-                              ),
-    width,
-    height,
-    (isGalaxy ? 1 : 0), //pass boolean as an integer (1 = T, 0 = F)
-    rot,
-    graph_name
+  //Create a list of 1D image data arrays as a Python list
+  PyObject* image_data_batch_py = PyList_New(image_data_batch.size());
+  npy_intp len = 30*30;  //Length of one 1D array
+
+  //Create a list of booleans as a Python list
+  PyObject* label_batch_py = PyList_New(label_batch.size());
+
+  for(int i = 0; i < image_data_batch.size(); i++){
+    //Set the value for the image data
+    PyList_SetItem(image_data_batch_py, i, Py_BuildValue("O",
+      PyArray_SimpleNewFromData(
+        1,
+        &len,
+        NPY_UINT32,
+        (void *)image_data_batch[i]
+      ))
+    );
+
+    //Sets the value for the boolean (which is passed as a int)
+    PyList_SetItem(label_batch_py, i,
+      Py_BuildValue("i", (label_batch[i] ? 1 : 0))
+    );
+  }
+
+  //Create as a batch that will be passed to the python program
+  PyObject* supervised_batch = Py_BuildValue("(O, O, s, i)",
+    image_data_batch_py,
+    label_batch_py,
+    graph_name,
+    (update_model ? 0 : 1)
   );
 
-  //Allocate memory for a 1 x size numpy array of uint32s and input buffer data
-  return training_unit;
+  return supervised_batch;
 }
 
-void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, int success,
+//Pretty prints the results of a batch into a table
+void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, vector<int> successes,
                           int digits){
-    //Field names are read as: was (T = correct/F = incorrect)
-    //because prediction was (+ = gal/ - = noise)
-    cout << "\t\t+";
-    cout << std::setfill('-') << std::setw(14) << "+";
-    for(int i = 0; i < 3; i++){
-        cout << std::setfill('-') << std::setw(9) << "+";
+  //How many were correct and how many were incorrectl
+  int correct = 0;
+  int incorrect = 0;
+  for(int i = 0; i < successes.size(); i++){
+    if(successes[i] == 1){
+      correct++;
+    }else{
+      incorrect++;
     }
-    cout << "\n";
+  }
 
-    cout << "\t\t| MARK | PRED | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "GALAXY" << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "NOISE" << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << "TOTALS" << " |\n";
-    cout << std::resetiosflags(std::ios::adjustfield);
+  //Field names are read as: was (T = correct/F = incorrect)
+  //because prediction was (+ = gal/ - = noise)
+  cout << "\t\t+";
+  cout << std::setfill('-') << std::setw(14) << "+";
+  for(int i = 0; i < 3; i++){
+      cout << std::setfill('-') << std::setw(9) << "+";
+  }
+  cout << "\n";
 
-    cout << "\t\t+";
-    cout << std::setfill('-') << std::setw(14) << "+";
-    for(int i = 0; i < 3; i++){
-        cout << std::setfill('-') << std::setw(9) << "+";
+  cout << "\t\t| MARK | PRED | "
+    << std::setfill(' ') << std::setw(digits) << std::left << "GALAXY" << " | "
+    << std::setfill(' ') << std::setw(digits) << std::left << "NOISE" << " | "
+    << std::setfill(' ') << std::setw(digits) << std::left << "TOTALS" << " |\n";
+  cout << std::resetiosflags(std::ios::adjustfield);
+
+  cout << "\t\t+";
+  cout << std::setfill('-') << std::setw(14) << "+";
+  for(int i = 0; i < 3; i++){
+      cout << std::setfill('-') << std::setw(9) << "+";
+  }
+  cout << "\n";
+
+  cout << "\t\t|     CORRECT | "
+    << std::setfill(' ') << std::setw(digits) << std::left << t_pos << " | "
+    << std::setfill(' ') << std::setw(digits) << std::left << t_neg << " | "
+    << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg << " | "
+    << " +" << correct << " (CORRECT)\n";
+  cout << std::resetiosflags(std::ios::adjustfield);
+
+  cout << "\t\t+";
+  cout << std::setfill('-') << std::setw(14) << "+";
+  for(int i = 0; i < 3; i++){
+      cout << std::setfill('-') << std::setw(9) << "+";
+  }
+  cout << "\n";
+
+  cout << "\t\t|   INCORRECT | "
+    << std::setfill(' ') << std::setw(digits) << std::left << f_pos << " | "
+    << std::setfill(' ') << std::setw(digits) << std::left << f_neg << " | "
+    << std::setfill(' ') << std::setw(digits) << std::left << f_pos + f_neg << " | "
+    << " +" << incorrect << " (INCORRECT)\n";
+  cout << std::resetiosflags(std::ios::adjustfield);
+
+  cout << "\t\t+";
+  cout << std::setfill('-') << std::setw(14) << "+";
+  for(int i = 0; i < 3; i++){
+      cout << std::setfill('-') << std::setw(9) << "+";
+  }
+  cout << "\n";
+
+  cout << "\t\t|      TOTALS | "
+    << std::setfill(' ') << std::setw(digits) << std::left << t_pos + f_pos << " | "  //Galaxy guesses
+    << std::setfill(' ') << std::setw(digits) << std::left << f_neg + t_neg << " | "  //Noise guesses
+    << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg + f_pos + f_neg << " | "
+    << " ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%\n";
+  cout << std::resetiosflags(std::ios::adjustfield);
+
+  cout << "\t\t+";
+  cout << std::setfill('-') << std::setw(14) << "+";
+  for(int i = 0; i < 3; i++){
+      cout << std::setfill('-') << std::setw(9) << "+";
+  }
+  cout << "\n";
+}
+
+//Trains the nueral net on an image batch and label batch and returns the results
+//to the terminal
+void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
+                                  vector<bool> label_batch,
+                                  int & t_pos, int & f_pos, int & t_neg, int & f_neg,
+                                  int units_expected, bool updateModel,
+                                  int digits, char *graph_name){
+  //Call the function in python to load the training unit as a tensor
+  //Get filename
+  PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
+  PyErr_Print();
+
+  //Import file as module
+  PyObject* py_module = PyImport_Import(py_name);
+  PyErr_Print();
+
+  //Get function name from module depending on if validating or training
+  PyObject* py_func;
+  py_func = PyObject_GetAttrString(py_module, (char*)"use_supervised_batch");
+  PyErr_Print();
+
+  //Call function with batch data
+  PyObject* py_result;
+  py_result = PyObject_CallObject(py_func,
+    get_supervised_batch(image_data_batch, label_batch, graph_name, updateModel)
+  );
+  PyErr_Print();
+
+  //Use the results to track successes adn failures
+  vector<int> successes;
+  for(int i = 0; i < image_data_batch.size(); i++){
+    if(py_result != NULL){
+      //PyObject_IsTrue returns 1 if py_result is true and 0 if it is false
+      successes.push_back(PyObject_IsTrue(PyList_GetItem(py_result, i)));
+    }else{
+      //cout << "Error: embedded python3 training function returning incorrectly\n";
     }
-    cout << "\n";
 
-    cout << "\t\t|     CORRECT | "
-      << std::setfill(' ') << std::setw(digits) << std::left << t_pos << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << t_neg << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg << " | "
-      << (success == 1 ? " +1 (CORRECT)\n" : "\n");
-    cout << std::resetiosflags(std::ios::adjustfield);
-
-    cout << "\t\t+";
-    cout << std::setfill('-') << std::setw(14) << "+";
-    for(int i = 0; i < 3; i++){
-        cout << std::setfill('-') << std::setw(9) << "+";
+    //Track true/false positives/negatives
+    if(label_batch[i]){
+      if(successes[i] == 1){ t_pos++; }else{ f_pos++; }
+    }else{
+      if(successes[i] == 1){ t_neg++; }else{ f_neg++; }
     }
-    cout << "\n";
+  }
 
-    cout << "\t\t|   INCORRECT | "
-      << std::setfill(' ') << std::setw(digits) << std::left << f_pos << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << f_neg << " | "
-      << std::setfill(' ') << std::setw(digits) << std::left << f_pos + f_neg << " | "
-      << (success != 1 ? " +1 (INCORRECT)\n" : "\n");
-    cout << std::resetiosflags(std::ios::adjustfield);
-
-    cout << "\t\t+";
-    cout << std::setfill('-') << std::setw(14) << "+";
-    for(int i = 0; i < 3; i++){
-        cout << std::setfill('-') << std::setw(9) << "+";
-    }
-    cout << "\n";
-
-    cout << "\t\t|      TOTALS | "
-      << std::setfill(' ') << std::setw(digits) << std::left << t_pos + f_pos << " | "  //Galaxy guesses
-      << std::setfill(' ') << std::setw(digits) << std::left << f_neg + t_neg << " | "  //Noise guesses
-      << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg + f_pos + f_neg << " | "
-      << " ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%\n";
-    cout << std::resetiosflags(std::ios::adjustfield);
-
-    cout << "\t\t+";
-    cout << std::setfill('-') << std::setw(14) << "+";
-    for(int i = 0; i < 3; i++){
-        cout << std::setfill('-') << std::setw(9) << "+";
-    }
-    cout << "\n\n";
+  //Announce and track the number of training units fed
+  cout << "\t-" << t_pos + f_pos + t_neg + f_neg << "/" << units_expected
+    << ((updateModel) ? " training units " : " validation units ") << " fed to network:\n";
+  print_results_table(t_pos, f_pos, t_neg, f_neg, successes, digits);
 }
 
 //Called when training a graph is specified. Note a reference to the jpx source
@@ -503,43 +583,12 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
             int start_component_index, int final_component_index,
             int resolution_level, bool updateModel){
 
-  //Galaxies are labelled where strongest in frequency, but often exist in adjacent
-  //frames. The tolerance specifies how many adjacent frames should be looked at
-  //for each label (either side).
-  //Tolerance supported but not used here due to sheer amount of surplus data
-  int tolerance = 0;
-  vector<label> tolerated_labels;
-
-  //Don't attempt to increase dataset when validating
-  tolerance = (!updateModel) ? 0 : tolerance;
-
-  for(int l = 0; l < labels.size(); l++){
-    //For each label, create tolerated labels (including original) and add if
-    //bounds check satisfied
-    for(int c = max(start_component_index, labels[l].f - tolerance);
-        c <= min(final_component_index, labels[l].f + tolerance);
-        c++){
-          //All else same except frequency frame
-          label l_new;
-          l_new.tlx = labels[l].tlx;
-          l_new.tly = labels[l].tly;
-          l_new.brx = labels[l].brx;
-          l_new.bry = labels[l].bry;
-          l_new.rot = labels[l].rot;
-          l_new.isGalaxy = labels[l].isGalaxy;
-          l_new.f = c;
-
-          tolerated_labels.push_back(l_new);
-    }
-  }
-
   //Training data is currently a block of positives followed by a block of
   //negatives. It should be random
-  std::random_shuffle(tolerated_labels.begin(), tolerated_labels.end());
+  std::random_shuffle(labels.begin(), labels.end());
 
   //Track the number of training units fed thus far and the number expected to be fed
-  int units_fed = 0;
-  int units_expected = tolerated_labels.size();
+  int units_expected = labels.size();
   int digits = units_expected > 0 ? (int) log10 ((double) units_expected) + 1 : 1;
   digits = (digits < 6) ? 6 : digits; //To hold the word 'galaxy'
 
@@ -550,22 +599,26 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
   int t_pos = 0;
   int t_neg = 0;
 
+  //Operate in batches (only recalc weights after batch change)
+  vector<kdu_uint32*> image_data_batch;
+  vector<bool> label_batch;
+
   //Decompress areas given by labels with a given tolerance (labels mark only the
   //frequency point at which the galaxy is strongest, but typically they are still
   //in previous and further frequency frames)
-  for(int l = 0; l < tolerated_labels.size(); l++){
+  for(int l = 0; l < labels.size(); l++){
     //Construct a region from the label data
     kdu_dims region;
-    region.access_pos()->set_x(tolerated_labels[l].tlx);
-    region.access_size()->set_x(tolerated_labels[l].brx - tolerated_labels[l].tlx);
-    region.access_pos()->set_y(tolerated_labels[l].tly);
-    region.access_size()->set_y(tolerated_labels[l].bry - tolerated_labels[l].tly);
+    region.access_pos()->set_x(labels[l].tlx);
+    region.access_size()->set_x(labels[l].brx - labels[l].tlx);
+    region.access_pos()->set_y(labels[l].tly);
+    region.access_size()->set_y(labels[l].bry - labels[l].tly);
 
     //Decompress over labeled frames at the correct
     //spacial coordinates using kakadu decompressor
     kdu_region_decompressor decompressor;
 
-    int component_index = tolerated_labels[l].f;
+    int component_index = labels[l].f;
 
     //TODO: variable
     int discard_levels = 0;
@@ -615,10 +668,10 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     }
 
     //Will hold data of decompressed region
-    kdu_uint32 *buffer = NULL;
+    image_data_batch.push_back(NULL);
 
     //For managing and allocating decompressor image buffers
-    buffer = new kdu_uint32[(size_t) region.area()];
+    image_data_batch[image_data_batch.size() - 1] = new kdu_uint32[(size_t) region.area()];
 
     //Loop decompression to ensure that amount of DWT discard levels doesn't
     //exceed tile with minimum DWT levels
@@ -641,8 +694,8 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
       //cout << "Processing\n";
       incomplete_region = component_dims;
       while(
-        decompressor.process(
-          (kdu_int32 *) buffer,   //Buffer to write into
+        decompressor.process(     //Buffer to write into:
+          (kdu_int32 *) image_data_batch[image_data_batch.size() - 1],
           region.pos,             //Buffer origin
           region.size.x,          //Row gap
           256000,                 //Suggesed increment
@@ -658,60 +711,34 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     //Render until there is no incomplete region remaining
     }while(!incomplete_region.is_empty());
 
-    //Pass kdu_uint32 as numpy array into python3 tensorflow.
-    //Also supply other data for tracking and reconstruction purposes
-    PyObject* numpy_array = get_supervised_unit(
-      buffer,                         //Data
-      region.access_size()->get_x(),  //Label dims (required for indexing into 2D)
-      region.access_size()->get_y(),
-      tolerated_labels[l].isGalaxy,   //Is galaxy?
-      tolerated_labels[l].rot,        //Does image need rotation
-      graph_name                      //Graph to train on
-    );
+    //Add the label to the batch
+    label_batch.push_back(labels[l].isGalaxy);
 
-    //Call the function in python to load the training unit as a tensor
-    //Get filename
-    PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
-    PyErr_Print();
-    //Import file as module
-    PyObject* py_module = PyImport_Import(py_name);
-    PyErr_Print();
-    //Get function name from module depending on if validating or training
-    PyObject* py_func;
-    if(updateModel){
-      py_func = PyObject_GetAttrString(py_module, (char*)"use_training_unit");
-    }else{
-      py_func = PyObject_GetAttrString(py_module, (char*)"use_validation_unit");
-    }
-    PyErr_Print();
-    //Call function with numpy aray
-    PyObject* py_result;
-    py_result = PyObject_CallObject(py_func, numpy_array);
-    PyErr_Print();
-    //Use the results to track successes
-    int success = -1;
-    if(py_result != NULL){
-      //PyObject_IsTrue returns 1 if py_result is true and 0 if it is false
-      success = PyObject_IsTrue(py_result);
-    }else{
-      cout << "Error: embedded python3 training function returning incorrectly\n";
-    }
+    //Optimise over a batch (reduces noise in the cost function)
+    if(image_data_batch.size() == 100){
+      //Feed in the batch
+      feed_batch_and_print_results( image_data_batch, label_batch,
+                                    t_pos, f_pos, t_neg, f_neg,
+                                    units_expected, updateModel,
+                                    digits, graph_name);
 
-    //Announce and track the number of training units fed
-    units_fed++;
-    cout << "\t-" << ((updateModel) ? "training unit " : "validation unit ")
-      << t_pos + f_pos + t_neg + f_neg + 1 << "/~" << units_expected <<  " fed to network:\n";
-    cout << "\t\t-x: [" << region.pos.x << ", " << region.pos.x + region.size.x << "]\n";
-    cout << "\t\t-y: [" << region.pos.y << ", " << region.pos.y + region.size.y << "]\n";
-    cout << "\t\t-f: " << component_index << "\n";
-
-    //Track and report the kind of failure
-    if(tolerated_labels[l].isGalaxy){
-      if(success == 1){ t_pos++; }else{ f_pos++; }
-    }else{
-      if(success == 1){ t_neg++; }else{ f_neg++; }
+      //Finished with batch data
+      image_data_batch.clear();
+      label_batch.clear();
     }
-    print_results_table(t_pos, f_pos, t_neg, f_neg, success, digits);
+  }
+
+  //If there are any leftovers in the batch then feed them into the neural net
+  if(image_data_batch.size() != 0){
+    //Feed in the batch
+    feed_batch_and_print_results( image_data_batch, label_batch,
+                                  t_pos, f_pos, t_neg, f_neg,
+                                  units_expected, updateModel,
+                                  digits, graph_name);
+
+    //Finished with batch data
+    image_data_batch.clear();
+    label_batch.clear();
   }
 
   //At this point all valid training units have been fed into the network
@@ -1106,6 +1133,9 @@ int main(int argc, char **argv){
   print_statistics(codestream);
 
   //TODO check resolution level is correct
+
+  //Begin timing
+
 
   //Split on training/validation/evaluating
   if(isTrain || isValidate){

@@ -1,0 +1,43 @@
+KDU: v7.8
+Creating embedded python3 environment
+Creating jp2 family source from file: '/mnt/shared-storage/dingo.00000.with_catalogue.jpx'
+Creating jpx source from jp2 family source
+Creating multi-threading environment
+Creating codestream interface from jp2_source
+File statistics:
+	-Minimum DWT   : 6 (levels)
+	-Tiling        : 1x1 (tiles)
+	-Components    : 1000
+	-Dimensions[0] : 3600x3600 (px)
+	-Area[0]       : 12960000 (px)
+	-Bit-depth[0]  : 32
+	-Comment[0]    : Kakadu-v7.8
+	-Comment[1]    : Kdu-Layer-Info: log_2{Delta-D(squared-error)/Delta-L(bytes)}, L(bytes)
+ -21.9,  8.4e+04
+ -23.0,  4.9e+05
+ -24.2,  8.9e+05
+ -25.4,  2.3e+06
+ -26.6,  3.7e+06
+ -27.7,  5.3e+06
+ -28.9,  9.5e+06
+ -30.1,  1.3e+07
+ -31.2,  1.4e+07
+ -32.4,  1.8e+07
+ -33.6,  2.1e+07
+ -34.8,  2.5e+07
+ -35.9,  3.0e+07
+ -37.6,  3.5e+07
+-192.0,  5.0e+07
+
+100 galaxy labels found in inclusive component range [0, 999]
+100 noise labels generated
+	-training unit 51/200 fed to network:
+		+-------------+--------+--------+--------+
+		| MARK | PRED | GALAXY | NOISE  | TOTALS |
+		+-------------+--------+--------+--------+
+		|     CORRECT | 23     | 0      | 23     |  +23 (CORRECT)
+		+-------------+--------+--------+--------+
+		|   INCORRECT | 0      | 27     | 27     |  +27 (INCORRECT)
+		+-------------+--------+--------+--------+
+		|      TOTALS | 23     | 27     | 50     |  ACCURACY: 46%
+		+-------------+--------+--------+--------+

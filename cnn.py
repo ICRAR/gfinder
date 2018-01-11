@@ -56,15 +56,15 @@ def apply_frequency_cutoff(img_matrix, cutoff):
 def save_array_as_fig(img_array, name):
     #Make sure there is a 0 pixel and a 255 pixel so colours are mapped correctly
     #on heatmap
-    img_array[0][0][1] = 255;
-    img_array[0][0][0] = 0;
+    img_array[0][1] = 255;
+    img_array[0][0] = 0;
 
     #Create graph to ensure that block was read correctly
     fig = plt.figure(name, figsize=(15, 15), dpi=80)  #dims*dpi = res
 
     #Constrain axis proportions and plot
     plt.gca().set_aspect('equal', adjustable='box')
-    plt.imshow(img_array[0], cmap="Greys_r")
+    plt.imshow(img_array, cmap="Greys_r")
 
     fig.savefig("output/" + name)
 
@@ -72,14 +72,13 @@ def save_array_as_fig(img_array, name):
     plt.close(fig)
 
 #Recieves a training unit and trains the graph on it
-def use_training_unit(  np_array,
-                        width,
-                        height,
-                        isGalaxy,
-                        rot,
-                        graph_name):
-    #Convert to uint8, [0, 255] is all that's needed
-    np_array = np_array.astype(np.uint8)
+def use_supervised_batch(   image_data_batch,
+                            label_batch,
+                            graph_name,
+                            update_model):
+    width = 30
+    height = 30
+    batch_size = len(image_data_batch)
 
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
@@ -90,109 +89,54 @@ def use_training_unit(  np_array,
     #Load the graph to be trained & keep the saver for later updating
     saver = restore_model(graph_name, sess)
 
-    #Make image conform to placeholder dimensions
-    image_input = np.reshape(np_array, (1, width, height))
-    #Rotate image input as informed
-    if rot == 90:
-        image_input = np.rot90(image_input, k=1, axes=(1, 2))
-    elif rot == 180:
-        image_input = np.rot90(image_input, k=2, axes=(1, 2))
-    elif rot == 270:
-        image_input = np.rot90(image_input, k=3, axes=(1, 2))
+    #Convert to feedable format
+    image_input = []
+    label_input = []
+    for i in range(0, batch_size):
+        #Convert to uint8 ([0, 255] is all that's needed) and placeholder dimensions
+        image_input.append(np.reshape(image_data_batch[i].astype(np.uint8), (width, height)))
 
-    #Save a copy of the graph if required
-    #save_array_as_fig(image_input, "test")
+        #Save a copy of the graph if required
+        #save_array_as_fig(image_input[i], "test" + str(i))
 
-    #Make label conform to placeholder dimensions
-    label_array = [0, 0]                            #One hot encoding
-    label_array[isGalaxy] = 1
-    label_input = np.reshape(label_array, (1, 2))
+        #Make label conform to placeholder dimensions
+        label_input.append([0, 0])          #One hot encoding
+        label_input[i][label_batch[i]] = 1
 
     #Create a unitary feeder dictionary
-    feed_dict_train = {'images:0': image_input, 'labels:0': label_input}
+    feed_dict = {'images:0': image_input, 'labels:0': label_input}
 
-    #Feed into the network so it can 'learn' by running the adam optimiser
-    sess.run('Adam', feed_dict=feed_dict_train)
+    #Only optimise the graph if in training mode
+    if update_model == 1:
+        #Feed into the network so it can 'learn' by running the adam optimiser
+        sess.run('Adam', feed_dict=feed_dict)
 
-    #Check the training prediction
-    #class_prob = tf.get_collection("class_prob")[0]
-    #print("Probs:" + str(class_prob.eval(session=sess, feed_dict=feed_dict_train)))
+    #print("\t-cost = " + str(sess.run('Mean:0', feed_dict=feed_dict)) + "\n")
 
+    #What is the prediction for each image
     class_pred = tf.get_collection("class_pred")[0]
-    pred = class_pred.eval(session=sess, feed_dict=feed_dict_train)
-    #print("Pred: " + str(pred))
+    preds = []
+    preds = class_pred.eval(session=sess, feed_dict=feed_dict)
 
+    #What was each image's actual label
     class_true = tf.get_collection("class_true")[0]
-    true = class_true.eval(session=sess, feed_dict=feed_dict_train)
-    #print("True: " + str(true))
+    trues = []
+    trues = class_true.eval(session=sess, feed_dict=feed_dict)
 
-    #Save the slightly more trained graph
-    update_model(graph_name, sess, saver)
+    #Create a list of successes and failures
+    successes = []
+    for i in range(0, batch_size):
+        successes.append(trues[i] == preds[i])
+
+    #Save the slightly more trained graph if in training mode
+    if update_model == 1:
+        update_model(graph_name, sess, saver)
 
     #Close tensorflow session
     sess.close()
 
     #Return the training success
-    return true == pred
-
-#Recieves a validation unit and runs prediction on it the graph on it
-#Similar to using a training unit except model is not updated
-def use_validation_unit(np_array,
-                        width,
-                        height,
-                        isGalaxy,
-                        rot,
-                        graph_name):
-    #Convert to uint8, [0, 255] is all that's needed
-    np_array = np_array.astype(np.uint8)
-
-    #Make sure graph structure is reset before opening session
-    tf.reset_default_graph()
-
-    #Begin a tensorflow session
-    sess = tf.Session()
-
-    #Load the graph to be trained & keep the saver for later updating
-    saver = restore_model(graph_name, sess)
-
-    #Make image and conform to placeholder dimensions
-    image_input = np.reshape(np_array, (1, width, height))
-    #Rotate image input as informed
-    if rot == 90:
-        image_input = np.rot90(image_input, k=1, axes=(1, 2))
-    elif rot == 180:
-        image_input = np.rot90(image_input, k=2, axes=(1, 2))
-    elif rot == 270:
-        image_input = np.rot90(image_input, k=3, axes=(1, 2))
-
-    #Save a copy of the graph if required
-    #save_array_as_fig(image_input, "test")
-
-    #Make labels conform to placeholder constraints
-    label_array = [0, 0]                            #One hot encoding
-    label_array[isGalaxy] = 1
-    label_input = np.reshape(label_array, (1, 2))
-
-    #Create a unitary feeder dictionary
-    feed_dict_train = {'images:0': image_input, 'labels:0': label_input}
-
-    #Check the training prediction
-    #class_prob = tf.get_collection("class_prob")[0]
-    #print("Probs:" + str(class_prob.eval(session=sess, feed_dict=feed_dict_train)))
-
-    class_pred = tf.get_collection("class_pred")[0]
-    pred = class_pred.eval(session=sess, feed_dict=feed_dict_train)
-    #print("Pred: " + str(pred))
-
-    class_true = tf.get_collection("class_true")[0]
-    true = class_true.eval(session=sess, feed_dict=feed_dict_train)
-    #print("True: " + str(true))
-
-    #Close tensorflow session
-    sess.close()
-
-    #Return the training success
-    return true == pred
+    return successes
 
 #Recieves a unit and evaluates it using the graph
 def use_evaluation_unit(np_array,
@@ -492,8 +436,9 @@ def new_graph(id,             #Unique identifier for saving the graph
     #Cost function is cross entropy (+ve and approaches zero as the model output
     #approaches the desired output
     cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=layer_fc1, labels=labels)
+    print("\t\t-Cross entropy function: " + str(cross_entropy))
     cost = tf.reduce_mean(cross_entropy)
-    print("\t\t-Cost function: " + str(cross_entropy))
+    print("\t\t-Cost function: " + str(cost))
 
     #OPTIMISATION FUNCTION
     #Optimisation function to Optimise cross entropy will be Adam optimizer
