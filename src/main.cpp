@@ -144,11 +144,13 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
           label l;
 
           //Simple rectangles can be represented using top left (v1) and bottom
-          //right (v3) vertices
-          l.tlx = v1.get_x();
-          l.tly = v1.get_y();
-          l.brx = v3.get_x();
-          l.bry = v3.get_y();
+          //right (v3) vertices. Note that the bounding box for the galaxy labels
+          //is VERY large (100x100 pixels) so is shrunk to 30x30 pixels for
+          //decompression
+          l.tlx = v1.get_x() + 35;
+          l.tly = v1.get_y() + 35;
+          l.brx = v3.get_x() - 35;
+          l.bry = v3.get_y() - 35;
 
           //Also need the frequency location to triangulate the roi, which can
           //be found in nlst

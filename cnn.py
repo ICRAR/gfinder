@@ -413,8 +413,8 @@ def new_graph(id,             #Unique identifier for saving the graph
     #Placeholders serve as variable input to the graph (can be changed when run)
     #Following placeholder takes single freqeuncy components as tensors
     #(must be float32 for convolution and must be 4D for tensorflow)
-    images = tf.placeholder(tf.float32, shape=[None, 100, 100], name='images')
-    images_4d = tf.reshape(images, shape=[-1, 100, 100, 1])
+    images = tf.placeholder(tf.float32, shape=[None, 30, 30], name='images')
+    images_4d = tf.reshape(images, shape=[-1, 30, 30, 1])
     print("\t\t-Placeholder '" + images.name + "': " + str(images))
 
     #and supervisory signals which are true/false (galaxy or not)
