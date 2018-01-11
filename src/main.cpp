@@ -88,7 +88,8 @@ struct label{
 void load_labels_from_roid_container( jpx_source & jpx_src,
                                       vector<label> & labels,
                                       int start_component_index,
-                                      int final_component_index){
+                                      int final_component_index)
+{
   //Get a reference to the meta manager
   jpx_meta_manager meta_manager = jpx_src.access_meta_manager();
   if(!meta_manager.exists()){
@@ -196,7 +197,8 @@ bool labels_intersect(label a, label b){
 
 //Creates a set of false labels
 void generate_false_labels( vector<label> & labels, int start_component_index,
-                            int final_component_index){
+                            int final_component_index)
+{
   //Range of components
   int range = final_component_index - start_component_index + 1; //+1 because inclusive
   //Required number of noise labels to be found
@@ -406,7 +408,8 @@ void end_embedded_python(){
 PyObject *get_supervised_batch( vector<kdu_uint32*> image_data_batch,
                                 vector<bool> label_batch,
                                 char *graph_name,
-                                bool update_model){
+                                bool update_model)
+{
   //A supervised batch is a list of 1D image data arrays, a list of labels, and
   //a graph name
 
@@ -447,7 +450,8 @@ PyObject *get_supervised_batch( vector<kdu_uint32*> image_data_batch,
 
 //Pretty prints the results of a batch into a table
 void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, vector<int> successes,
-                          int digits){
+                          int digits)
+{
   //How many were correct and how many were incorrectl
   int correct = 0;
   int incorrect = 0;
@@ -481,26 +485,32 @@ void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, vector<int
   }
   cout << "\n";
 
+  std::ostringstream c_oss;
+  c_oss << " +" << correct << " (CORRECT)";
   cout << "\t\t|     CORRECT | "
     << std::setfill(' ') << std::setw(digits) << std::left << t_pos << " | "
     << std::setfill(' ') << std::setw(digits) << std::left << t_neg << " | "
     << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg << " | "
-    << " +" << correct << " (CORRECT)\n";
-  cout << std::resetiosflags(std::ios::adjustfield);
+    << std::setfill(' ') << std::setw(17) << std::left << c_oss.str();
+  cout << std::resetiosflags(std::ios::adjustfield) << "| \n";
 
   cout << "\t\t+";
   cout << std::setfill('-') << std::setw(14) << "+";
   for(int i = 0; i < 3; i++){
       cout << std::setfill('-') << std::setw(9) << "+";
   }
-  cout << "\n";
+  cout << std::setfill(' ') << std::setw(18) << std::right << " " << "|--> "
+    << "BATCH ACCURACY: "
+    << 100*(double)(correct)/(double)(incorrect + correct) << "%\n";
 
+  std::ostringstream inc_oss;
+  inc_oss << " +" << incorrect << " (INCORRECT)";
   cout << "\t\t|   INCORRECT | "
     << std::setfill(' ') << std::setw(digits) << std::left << f_pos << " | "
     << std::setfill(' ') << std::setw(digits) << std::left << f_neg << " | "
     << std::setfill(' ') << std::setw(digits) << std::left << f_pos + f_neg << " | "
-    << " +" << incorrect << " (INCORRECT)\n";
-  cout << std::resetiosflags(std::ios::adjustfield);
+    << std::setfill(' ') << std::setw(17) << std::left << inc_oss.str();
+  cout << std::resetiosflags(std::ios::adjustfield) << "| \n";
 
   cout << "\t\t+";
   cout << std::setfill('-') << std::setw(14) << "+";
@@ -513,7 +523,7 @@ void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, vector<int
     << std::setfill(' ') << std::setw(digits) << std::left << t_pos + f_pos << " | "  //Galaxy guesses
     << std::setfill(' ') << std::setw(digits) << std::left << f_neg + t_neg << " | "  //Noise guesses
     << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg + f_pos + f_neg << " | "
-    << " ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%\n";
+    << " TOTAL ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%\n";
   cout << std::resetiosflags(std::ios::adjustfield);
 
   cout << "\t\t+";
@@ -530,7 +540,8 @@ void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
                                   vector<bool> label_batch,
                                   int & t_pos, int & f_pos, int & t_neg, int & f_neg,
                                   int units_expected, bool updateModel,
-                                  int digits, char *graph_name){
+                                  int digits, char *graph_name)
+{
   //Call the function in python to load the training unit as a tensor
   //Get filename
   PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
@@ -581,7 +592,8 @@ void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
 void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
             kdu_thread_env & env,
             int start_component_index, int final_component_index,
-            int resolution_level, bool updateModel){
+            int resolution_level, bool updateModel)
+{
 
   //Training data is currently a block of positives followed by a block of
   //negatives. It should be random
@@ -780,7 +792,8 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
                 int start_component_index, int final_component_index,
                 int resolution_level,
                 int limit_rect_x, int limit_rect_y,
-                int limit_rect_w, int limit_rect_h){
+                int limit_rect_w, int limit_rect_h)
+{
 
   //To evaluate, a sliding window over the image at the required components is
   //used to evalate on every possible region of the input image/component. Each
