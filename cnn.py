@@ -120,7 +120,7 @@ def use_supervised_batch(   image_data_batch,
         update_model(graph_name, sess, saver)
 
     #Prints current cost
-    print("\t-loss (mean cross entropy) = " + str(sess.run('Mean:0', feed_dict=feed_dict)))
+    print("\t-loss (mean cross entropy of units) = " + str(sess.run('Mean:0', feed_dict=feed_dict)))
 
     #What is the prediction for each image? (as bool)
     class_pred = tf.get_collection("class_pred")[0]
@@ -271,7 +271,8 @@ def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
 
     #Create filters with a given shape to be optimised over graph execution
     #rank must be 4 for tensorflow
-    weights = new_weights(shape=[filter_size, filter_size, num_inputs, num_filters], var_name=("conv_weights_" + conv_index))
+    weights = new_weights(  shape=[filter_size, filter_size, num_inputs, num_filters],
+                            var_name=("conv_weights_" + conv_index))
 
     #Create biases to be optimised over graph execution
     biases = new_biases(length=num_filters, var_name=("conv_biases_" + conv_index))
@@ -347,7 +348,7 @@ def new_fc_layer(prev_layer,         #the previous layer (input to this layer)
 def new_graph(id,             #Unique identifier for saving the graph
               filter_sizes,   #Filter dims for each convolutional layer (kernals)
               num_filters,    #Number of filters for each convolutional layer
-              fc_size):       #Number of neurons in fully connected layer
+              fc_sizes):      #Number of neurons in fully connected layers
 
     #Create computational graph to represent the neural net:
     print("Creating new graph: '" + id + "'")
@@ -402,17 +403,24 @@ def new_graph(id,             #Unique identifier for saving the graph
     #are learned during execution
     layer_fc0 = new_fc_layer(prev_layer=layer_flat,
                              num_inputs=num_features,
-                             num_outputs=fc_size,
+                             num_outputs=fc_sizes[0],
                              use_activation_function=True,
                              fc_index=0)
     print("\t\t-Fully connected 0: " + str(layer_fc0))
 
     layer_fc1 = new_fc_layer(prev_layer=layer_fc0,
-                             num_inputs=fc_size,
-                             num_outputs=2,
-                             use_activation_function=False,
+                             num_inputs=fc_sizes[0],
+                             num_outputs=fc_sizes[1],
+                             use_activation_function=True,
                              fc_index=1)
     print("\t\t-Fully connected 1: " + str(layer_fc1))
+
+    layer_fc2 = new_fc_layer(prev_layer=layer_fc1,
+                             num_inputs=fc_sizes[1],
+                             num_outputs=2,
+                             use_activation_function=False,
+                             fc_index=2)
+    print("\t\t-Fully connected 2: " + str(layer_fc2))
 
     #PREDICTION DETAILS
     #Final fully connected layer suggests prediction (these structures are added to
@@ -420,7 +428,7 @@ def new_graph(id,             #Unique identifier for saving the graph
     print("\t*Prediction details:")
 
     #Normalise it to get a probability
-    class_prob = tf.nn.softmax(layer_fc1)
+    class_prob = tf.nn.softmax(layer_fc2)
     print("\t\t-Class probabilities: " + str(class_prob))
     tf.add_to_collection("class_prob", class_prob)
 
@@ -435,7 +443,7 @@ def new_graph(id,             #Unique identifier for saving the graph
     #COST FUNCTION
     #Cost function is cross entropy (+ve and approaches zero as the model output
     #approaches the desired output
-    cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=layer_fc1,
+    cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=layer_fc2,
                                                             labels=labels)
     print("\t\t-Cross entropy function: " + str(cross_entropy))
     cost = tf.reduce_mean(cross_entropy)
@@ -453,9 +461,9 @@ def new_graph(id,             #Unique identifier for saving the graph
 def new_basic_graph(id):
     #Create a graph
     new_graph(id,      #Id
-              filter_sizes=[6, 6],  #Convolutional layer filter sizes in pixels
-              num_filters=[16, 36], #Number of filters in each Convolutional layer
-              fc_size=128)          #Number of neurons in fully connected layer
+              filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
+              num_filters=[64, 64], #Number of filters in each Convolutional layer
+              fc_sizes=[384, 192])          #Number of neurons in fully connected layer
 
     #Save it in a tensorflow session
     sess = tf.Session()
