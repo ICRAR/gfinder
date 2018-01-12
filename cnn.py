@@ -120,7 +120,7 @@ def use_supervised_batch(   image_data_batch,
         update_model(graph_name, sess, saver)
 
     #Prints current cost
-    print("\t-cost = " + str(sess.run('Mean:0', feed_dict=feed_dict)))
+    print("\t-loss (mean cross entropy) = " + str(sess.run('Mean:0', feed_dict=feed_dict)))
 
     #What is the prediction for each image? (as bool)
     class_pred = tf.get_collection("class_pred")[0]
@@ -453,7 +453,7 @@ def new_graph(id,             #Unique identifier for saving the graph
 def new_basic_graph(id):
     #Create a graph
     new_graph(id,      #Id
-              filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
+              filter_sizes=[8, 8],  #Convolutional layer filter sizes in pixels
               num_filters=[16, 36], #Number of filters in each Convolutional layer
               fc_size=128)          #Number of neurons in fully connected layer
 

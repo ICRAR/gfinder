@@ -712,7 +712,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     label_batch.push_back(labels[l].isGalaxy);
 
     //Optimise over a batch (reduces noise in the cost function)
-    if(image_data_batch.size() == 25){
+    if(image_data_batch.size() == 32){
       //Feed in the batch
       feed_batch_and_print_results( image_data_batch, label_batch,
                                     t_pos, f_pos, t_neg, f_neg,
