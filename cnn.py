@@ -13,7 +13,7 @@ if not hasattr(sys, 'argv'):
 import os                           #For file reading and warning suppression
 import shutil                       #For directory deletion
 import numpy as np                  #For transforming blocks
-#import matplotlib.pyplot as plt     #For visualisation
+import matplotlib.pyplot as plt     #For visualisation
 import tensorflow as tf             #For deep learning
 import math                         #For logs
 import time                         #For debugging with catchup
@@ -96,9 +96,6 @@ def use_supervised_batch(   image_data_batch,
         #Convert to uint8 ([0, 255] is all that's needed) and placeholder dimensions
         image_input.append(np.reshape(image_data_batch[i].astype(np.uint8), (width, height)))
 
-        #Save a copy of the graph if required
-        #save_array_as_fig(image_input[i], "test" + str(i))
-
         #Make label conform to placeholder dimensions
         label_input.append([0, 0])          #One hot encoding
         label_input[i][label_batch[i]] = 1
@@ -116,26 +113,15 @@ def use_supervised_batch(   image_data_batch,
 
     #print("\t-cost = " + str(sess.run('Mean:0', feed_dict=feed_dict)) + "\n")
 
-    #What is the prediction for each image
+    #What is the prediction for each image? (as bool)
     class_pred = tf.get_collection("class_pred")[0]
-    preds = []
-    preds = class_pred.eval(session=sess, feed_dict=feed_dict)
-
-    #What was each image's actual label
-    class_true = tf.get_collection("class_true")[0]
-    trues = []
-    trues = class_true.eval(session=sess, feed_dict=feed_dict)
-
-    #Create a list of successes and failures
-    successes = []
-    for i in range(0, batch_size):
-        successes.append(trues[i] == preds[i])
-
+    preds = [x==1 for x in class_pred.eval(session=sess, feed_dict=feed_dict)]
+    
     #Close tensorflow session
     sess.close()
 
-    #Return the training success
-    return successes
+    #Return the training predictions
+    return preds
 
 #Recieves a unit and evaluates it using the graph
 def use_evaluation_unit(np_array,

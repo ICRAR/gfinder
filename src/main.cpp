@@ -442,14 +442,15 @@ PyObject *get_supervised_batch( vector<kdu_uint32*> image_data_batch,
 }
 
 //Pretty prints the results of a batch into a table
-void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg, vector<int> successes,
+void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg,
+                          vector<int> preds, vector<bool> label_batch,
                           int digits)
 {
   //How many were correct and how many were incorrectl
   int correct = 0;
   int incorrect = 0;
-  for(int i = 0; i < successes.size(); i++){
-    if(successes[i] == 1){
+  for(int i = 0; i < preds.size(); i++){
+    if((preds[i] == 1 && label_batch[i]) || (preds[i] == 0 && !label_batch[i])){
       correct++;
     }else{
       incorrect++;
@@ -556,28 +557,28 @@ void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
   );
   PyErr_Print();
 
-  //Use the results to track successes adn failures
-  vector<int> successes;
+  //Use the prediction results to track successes and failures
+  vector<int> preds;
   for(int i = 0; i < image_data_batch.size(); i++){
     if(py_result != NULL){
       //PyObject_IsTrue returns 1 if py_result is true and 0 if it is false
-      successes.push_back(PyObject_IsTrue(PyList_GetItem(py_result, i)));
+      preds.push_back(PyObject_IsTrue(PyList_GetItem(py_result, i)));
     }else{
-      //cout << "Error: embedded python3 training function returning incorrectly\n";
+      cout << "Error: embedded python3 training function returning incorrectly\n";
     }
 
     //Track true/false positives/negatives
     if(label_batch[i]){
-      if(successes[i] == 1){ t_pos++; }else{ f_pos++; }
+      if(preds[i] == 1){ t_pos++; }else{ t_neg++; }
     }else{
-      if(successes[i] == 1){ t_neg++; }else{ f_neg++; }
+      if(preds[i] == 1){ f_pos++; }else{ f_neg++; }
     }
   }
 
   //Announce and track the number of training units fed
   cout << "\t-" << t_pos + f_pos + t_neg + f_neg << "/" << units_expected
     << ((updateModel) ? " training units " : " validation units ") << "fed to network:\n";
-  print_results_table(t_pos, f_pos, t_neg, f_neg, successes, digits);
+  print_results_table(t_pos, f_pos, t_neg, f_neg, preds, label_batch, digits);
 }
 
 //Called when training a graph is specified. Note a reference to the jpx source
