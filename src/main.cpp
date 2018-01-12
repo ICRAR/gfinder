@@ -196,7 +196,7 @@ void generate_false_labels( vector<label> & labels, int start_component_index,
   //Range of components
   int range = final_component_index - start_component_index + 1; //+1 because inclusive
   //Required number of noise labels to be found
-  int req = labels.size();
+  int req = 10*labels.size();
   //The width and height of galaxy labels
   int w = labels[0].brx - labels[0].tlx;
   int h = labels[0].bry - labels[0].tly;
@@ -730,7 +730,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     label_batch.push_back(labels[l].isGalaxy);
 
     //Optimise over a batch (reduces noise in the cost function)
-    if(image_data_batch.size() == 32){
+    if(image_data_batch.size() == 128){
       //Feed in the batch
       feed_batch_and_print_results( image_data_batch, label_batch,
                                     t_pos, f_pos, t_neg, f_neg,
