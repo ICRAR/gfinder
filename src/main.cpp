@@ -1149,8 +1149,8 @@ int main(int argc, char **argv){
     //Now add some false labels. False labels won't be where a galaxy is spatially,
     //so get 100x100's that aren't in the galaxy components. Get as many false labels
     //as true labels
-    generate_false_labels(labels, start_component_index, final_component_index);
-    cout << labels.size() - num_true_labels << " noise labels generated\n";
+    //generate_false_labels(labels, start_component_index, final_component_index);
+    //cout << labels.size() - num_true_labels << " noise labels generated\n";
 
     //Note jpx_src required for metadata reads and codestream required for
     //image decompression. The final argument specifies if the model should
