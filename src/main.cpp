@@ -443,20 +443,9 @@ PyObject *get_supervised_batch( vector<kdu_uint32*> image_data_batch,
 
 //Pretty prints the results of a batch into a table
 void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg,
-                          vector<int> preds, vector<bool> label_batch,
+                          int correct, int incorrect,
                           int digits)
 {
-  //How many were correct and how many were incorrectl
-  int correct = 0;
-  int incorrect = 0;
-  for(int i = 0; i < preds.size(); i++){
-    if((preds[i] == 1 && label_batch[i]) || (preds[i] == 0 && !label_batch[i])){
-      correct++;
-    }else{
-      incorrect++;
-    }
-  }
-
   //Field names are read as: was (T = correct/F = incorrect)
   //because prediction was (+ = gal/ - = noise)
   cout << "\t\t+";
@@ -559,6 +548,8 @@ void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
 
   //Use the prediction results to track successes and failures
   vector<int> preds;
+  int correct = 0;
+  int incorrect = 0;
   for(int i = 0; i < image_data_batch.size(); i++){
     if(py_result != NULL){
       //PyObject_IsTrue returns 1 if py_result is true and 0 if it is false
@@ -569,16 +560,16 @@ void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
 
     //Track true/false positives/negatives
     if(label_batch[i]){
-      if(preds[i] == 1){ t_pos++; }else{ t_neg++; }
+      if(preds[i] == 1){ t_pos++; correct++; }else{ f_pos++; incorrect++; }
     }else{
-      if(preds[i] == 1){ f_pos++; }else{ f_neg++; }
+      if(preds[i] == 0){ t_neg++; correct++; }else{ f_neg++; incorrect++; }
     }
   }
 
   //Announce and track the number of training units fed
   cout << "\t-" << t_pos + f_pos + t_neg + f_neg << "/" << units_expected
     << ((updateModel) ? " training units " : " validation units ") << "fed to network:\n";
-  print_results_table(t_pos, f_pos, t_neg, f_neg, preds, label_batch, digits);
+  print_results_table(t_pos, f_pos, t_neg, f_neg, correct, incorrect, digits);
 }
 
 //Called when training a graph is specified. Note a reference to the jpx source
@@ -721,7 +712,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     label_batch.push_back(labels[l].isGalaxy);
 
     //Optimise over a batch (reduces noise in the cost function)
-    if(image_data_batch.size() == 100){
+    if(image_data_batch.size() == 25){
       //Feed in the batch
       feed_batch_and_print_results( image_data_batch, label_batch,
                                     t_pos, f_pos, t_neg, f_neg,
