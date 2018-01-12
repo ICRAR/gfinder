@@ -13,7 +13,7 @@ if not hasattr(sys, 'argv'):
 import os                           #For file reading and warning suppression
 import shutil                       #For directory deletion
 import numpy as np                  #For transforming blocks
-import matplotlib.pyplot as plt     #For visualisation
+#import matplotlib.pyplot as plt     #For visualisation
 import tensorflow as tf             #For deep learning
 import math                         #For logs
 import time                         #For debugging with catchup
@@ -97,11 +97,20 @@ def use_supervised_batch(   image_data_batch,
         image_input.append(np.reshape(image_data_batch[i].astype(np.uint8), (width, height)))
 
         #Make label conform to placeholder dimensions
-        label_input.append([0, 0])          #One hot encoding
-        label_input[i][label_batch[i]] = 1
+        if label_batch[i] == 1:
+            label_input.append([1, 0])          #One hot encoding
+        elif label_batch[i] == 0:
+            label_input.append([0, 1])          #One hot encoding
 
     #Create a unitary feeder dictionary
     feed_dict = {'images:0': image_input, 'labels:0': label_input}
+
+    #Check feed dict
+    '''
+    print(label_input);
+    for i in range(0 , batch_size):
+        save_array_as_fig(image_input[i], str(i))
+    '''
 
     #Only optimise & save the graph if in training mode
     if optimise_and_save == 1:
@@ -111,12 +120,13 @@ def use_supervised_batch(   image_data_batch,
         #Save the slightly more trained graph if in training mode
         update_model(graph_name, sess, saver)
 
-    #print("\t-cost = " + str(sess.run('Mean:0', feed_dict=feed_dict)) + "\n")
+    #Prints current cost
+    print("\t-cost = " + str(sess.run('Mean:0', feed_dict=feed_dict)))
 
     #What is the prediction for each image? (as bool)
     class_pred = tf.get_collection("class_pred")[0]
     preds = [x==1 for x in class_pred.eval(session=sess, feed_dict=feed_dict)]
-    
+
     #Close tensorflow session
     sess.close()
 
@@ -346,7 +356,7 @@ def new_graph(id,             #Unique identifier for saving the graph
     images_4d = tf.reshape(images, shape=[-1, 30, 30, 1])
     print("\t\t-Placeholder '" + images.name + "': " + str(images))
 
-    #and supervisory signals which are true/false (galaxy or not)
+    #and supervisory signals which are one hot encodings [isGalaxy, isNoise]
     labels = tf.placeholder(tf.float32, shape=[None, 2], name='labels')
     print("\t\t-Placeholder '" + labels.name + "': " + str(labels))
 
@@ -420,7 +430,8 @@ def new_graph(id,             #Unique identifier for saving the graph
     #COST FUNCTION
     #Cost function is cross entropy (+ve and approaches zero as the model output
     #approaches the desired output
-    cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=layer_fc1, labels=labels)
+    cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=layer_fc1,
+                                                            labels=labels)
     print("\t\t-Cross entropy function: " + str(cross_entropy))
     cost = tf.reduce_mean(cross_entropy)
     print("\t\t-Cost function: " + str(cost))
