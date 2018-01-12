@@ -785,8 +785,8 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
   //possible region is fed to the neural network graph to test if it holds a
   //galaxy. The result is crunched to find the area that most likely holds
   //a galaxy based on the results for nearby regions
-  int window_width = 100;
-  int window_height = 100;
+  int window_width = 30;
+  int window_height = 30;
   int stride_x = 5;
   int stride_y = 5;
   int image_width = limit_rect_x + limit_rect_w;

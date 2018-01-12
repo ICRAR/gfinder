@@ -13,7 +13,7 @@ if not hasattr(sys, 'argv'):
 import os                           #For file reading and warning suppression
 import shutil                       #For directory deletion
 import numpy as np                  #For transforming blocks
-#import matplotlib.pyplot as plt     #For visualisation
+import matplotlib.pyplot as plt     #For visualisation
 import tensorflow as tf             #For deep learning
 import math                         #For logs
 import time                         #For debugging with catchup
@@ -452,7 +452,7 @@ def new_graph(id,             #Unique identifier for saving the graph
     #OPTIMISATION FUNCTION
     #Optimisation function to Optimise cross entropy will be Adam optimizer
     #(advanced gradient descent)
-    alpha = 1e-4
+    alpha = 1e-3
     optimiser = tf.train.AdamOptimizer(learning_rate=alpha).minimize(cost)
     print("\t\t-Optimiser: alpha=" + str(alpha) + ", " + str(optimiser.name))
 
