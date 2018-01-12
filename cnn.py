@@ -98,16 +98,15 @@ def use_supervised_batch(   image_data_batch,
 
         #Make label conform to placeholder dimensions
         if label_batch[i] == 1:
-            label_input.append([1, 0])          #One hot encoding
-        elif label_batch[i] == 0:
             label_input.append([0, 1])          #One hot encoding
+        elif label_batch[i] == 0:
+            label_input.append([1, 0])
 
     #Create a unitary feeder dictionary
     feed_dict = {'images:0': image_input, 'labels:0': label_input}
 
-    #Check feed dict
     '''
-    print(label_input);
+    #Check feed dict
     for i in range(0 , batch_size):
         save_array_as_fig(image_input[i], str(i))
     '''
@@ -126,6 +125,12 @@ def use_supervised_batch(   image_data_batch,
     #What is the prediction for each image? (as bool)
     class_pred = tf.get_collection("class_pred")[0]
     preds = [x==1 for x in class_pred.eval(session=sess, feed_dict=feed_dict)]
+
+    '''
+    #Check predictions
+    for i in range(0 , batch_size):
+        print(str(sess.run('add_3:0', feed_dict=feed_dict)[i]) + " == " + str(class_pred.eval(session=sess, feed_dict=feed_dict)[i]) + " ? " + str(sess.run('labels:0', feed_dict=feed_dict)[i]))
+    '''
 
     #Close tensorflow session
     sess.close()
