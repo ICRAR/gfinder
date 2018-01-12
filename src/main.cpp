@@ -225,12 +225,8 @@ void generate_false_labels( vector<label> & labels, int start_component_index,
         }
       }
 
-      cout << galaxies.size() << " galaxies in component " << i << "\n";
-
       //A random number generator will be required
       srand(0); //Seed
-
-      int overlaps = 0;
 
       //In each component i, find the correct number of labels (calculated earlier)
       //ensuring that they don't intersect with the galaxies in this label
@@ -261,14 +257,11 @@ void generate_false_labels( vector<label> & labels, int start_component_index,
         //If there was no overlap then add, otherwise try again
         if(overlap){
           j--;
-          overlaps++;
         }else{
           labels.push_back(noise);
           noise_labels_generated++;
         }
       }
-
-      cout << overlaps << " overlaps\n";
     }
   }
 }

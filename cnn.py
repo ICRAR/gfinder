@@ -96,20 +96,11 @@ def use_supervised_batch(   image_data_batch,
         #Convert to uint8 ([0, 255] is all that's needed) and placeholder dimensions
         image_input.append(np.reshape(image_data_batch[i].astype(np.uint8), (width, height)))
 
-        #Make label conform to placeholder dimensions
-        if label_batch[i] == 1:
-            label_input.append([0, 1])          #One hot encoding
-        elif label_batch[i] == 0:
-            label_input.append([1, 0])
+        #COnvert label input into array of scalar arrays
+        label_input.append([label_batch[i]])
 
     #Create a unitary feeder dictionary
     feed_dict = {'images:0': image_input, 'labels:0': label_input}
-
-    '''
-    #Check feed dict
-    for i in range(0 , batch_size):
-        save_array_as_fig(image_input[i], str(i))
-    '''
 
     #Only optimise & save the graph if in training mode
     if optimise_and_save == 1:
@@ -119,18 +110,11 @@ def use_supervised_batch(   image_data_batch,
         #Save the slightly more trained graph if in training mode
         update_model(graph_name, sess, saver)
 
-    #Prints current cost
-    print("\t-loss (mean cross entropy of units) = " + str(sess.run('Mean:0', feed_dict=feed_dict)))
+    #Prints current loss
+    print("\t-loss (mean sigmoid cross entropy of batch) = " + str(sess.run('loss:0', feed_dict=feed_dict)))
 
     #What is the prediction for each image? (as bool)
-    class_pred = tf.get_collection("class_pred")[0]
-    preds = [x==1 for x in class_pred.eval(session=sess, feed_dict=feed_dict)]
-
-    '''
-    #Check predictions
-    for i in range(0 , batch_size):
-        print(str(sess.run('add_3:0', feed_dict=feed_dict)[i]) + " == " + str(class_pred.eval(session=sess, feed_dict=feed_dict)[i]) + " ? " + str(sess.run('labels:0', feed_dict=feed_dict)[i]))
-    '''
+    preds = [x[0] > 0.5 for x in sess.run('predictor:0', feed_dict=feed_dict)]
 
     #Close tensorflow session
     sess.close()
@@ -294,7 +278,7 @@ def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
                            padding='SAME')      #Consistent shape
 
     #Apply activation function
-    layer = tf.nn.relu(layer)
+    layer = tf.nn.relu(layer, name='conv_' + conv_index)
 
     #Return the layer (and also the weights for inspection)
     return layer, weights
@@ -312,7 +296,7 @@ def flatten_layer(layer):
     num_features = layer_shape[1:4].num_elements()
 
     # Reshape the layer to [num_images, num_features]
-    layer_flat = tf.reshape(layer, [-1, num_features])
+    layer_flat = tf.reshape(layer, [-1, num_features], name='conv_flatten')
 
     #The shape of the flattened layer is now
     #[num_images, img_height * img_width * num_channels]
@@ -324,7 +308,7 @@ def flatten_layer(layer):
 def new_fc_layer(prev_layer,         #the previous layer (input to this layer)
                  num_inputs,         #number of images to be input
                  num_outputs,        #number to be output
-                 use_activation_function,
+                 final_fc_layer,
                  fc_index):          #for unique variable naming
 
     #Stringify index
@@ -339,8 +323,10 @@ def new_fc_layer(prev_layer,         #the previous layer (input to this layer)
     layer = tf.matmul(prev_layer, weights) + biases
 
     #Apply activation function if requested
-    if use_activation_function:
-        layer = tf.nn.relu(layer)
+    if not final_fc_layer:
+        layer = tf.nn.relu(layer, name='fc_' + fc_index)
+    else:
+        layer = tf.identity(layer, name='fc_final')
 
     return layer
 
@@ -362,13 +348,9 @@ def new_graph(id,             #Unique identifier for saving the graph
     images_4d = tf.reshape(images, shape=[-1, 30, 30, 1])
     print("\t\t-Placeholder '" + images.name + "': " + str(images))
 
-    #and supervisory signals which are one hot encodings [isGalaxy, isNoise]
-    labels = tf.placeholder(tf.float32, shape=[None, 2], name='labels')
+    #and supervisory signals which are boolean (is or is not a galaxy)
+    labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
     print("\t\t-Placeholder '" + labels.name + "': " + str(labels))
-
-    #for later comparison
-    class_true = tf.argmax(labels, axis=1, name='class_true')
-    tf.add_to_collection("class_true", class_true)
 
     #CONVOLUTIONAL LAYERS
     #These convolutional layers sequentially take inputs and create/apply filters
@@ -404,21 +386,21 @@ def new_graph(id,             #Unique identifier for saving the graph
     layer_fc0 = new_fc_layer(prev_layer=layer_flat,
                              num_inputs=num_features,
                              num_outputs=fc_sizes[0],
-                             use_activation_function=True,
+                             final_fc_layer=False,
                              fc_index=0)
     print("\t\t-Fully connected 0: " + str(layer_fc0))
 
     layer_fc1 = new_fc_layer(prev_layer=layer_fc0,
                              num_inputs=fc_sizes[0],
                              num_outputs=fc_sizes[1],
-                             use_activation_function=True,
+                             final_fc_layer=False,
                              fc_index=1)
     print("\t\t-Fully connected 1: " + str(layer_fc1))
 
     layer_fc2 = new_fc_layer(prev_layer=layer_fc1,
                              num_inputs=fc_sizes[1],
-                             num_outputs=2,
-                             use_activation_function=False,
+                             num_outputs=1,
+                             final_fc_layer=True,
                              fc_index=2)
     print("\t\t-Fully connected 2: " + str(layer_fc2))
 
@@ -427,15 +409,10 @@ def new_graph(id,             #Unique identifier for saving the graph
     #collections for ease of access later on)
     print("\t*Prediction details:")
 
-    #Normalise it to get a probability
-    class_prob = tf.nn.softmax(layer_fc2)
-    print("\t\t-Class probabilities: " + str(class_prob))
-    tf.add_to_collection("class_prob", class_prob)
-
-    #Greatest probability of the classes (not a galaxy, is a galaxy) is the prediction
-    class_pred = tf.argmax(class_prob, axis=1)
-    print("\t\t-Class prediction: " + str(class_pred))
-    tf.add_to_collection("class_pred", class_pred)
+    #Softmax it to get a probability
+    prediction = tf.greater(tf.nn.sigmoid(layer_fc2), [0.5], name='predictor')
+    print("\t\t-Class prediction: " + str(prediction))
+    tf.add_to_collection("prediction", prediction)
 
     #Backpropogation details
     print("\t*Backpropagation details:")
@@ -443,16 +420,17 @@ def new_graph(id,             #Unique identifier for saving the graph
     #COST FUNCTION
     #Cost function is cross entropy (+ve and approaches zero as the model output
     #approaches the desired output
-    cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=layer_fc2,
-                                                            labels=labels)
-    print("\t\t-Cross entropy function: " + str(cross_entropy))
-    cost = tf.reduce_mean(cross_entropy)
-    print("\t\t-Cost function: " + str(cost))
+    cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=layer_fc2,
+                                                            labels=labels,
+                                                            name='sigmoid_cross_entropy')
+    print("\t\t-Cross entropy: " + str(cross_entropy))
+    cost = tf.reduce_mean(cross_entropy, name='loss')
+    print("\t\t-Loss: " + str(cost))
 
     #OPTIMISATION FUNCTION
     #Optimisation function to Optimise cross entropy will be Adam optimizer
     #(advanced gradient descent)
-    alpha = 1e-3
+    alpha = 1e-4    #Learning rate
     optimiser = tf.train.AdamOptimizer(learning_rate=alpha).minimize(cost)
     print("\t\t-Optimiser: alpha=" + str(alpha) + ", " + str(optimiser.name))
 
