@@ -112,7 +112,6 @@ def use_supervised_batch(   image_data_batch,
 
     #Prints current loss
     print("\t-loss (mean sigmoid cross entropy of batch) = " + str(sess.run('loss:0', feed_dict=feed_dict)))
-
     #What is the prediction for each image? (as bool)
     preds = [x[0] > 0.5 for x in sess.run('predictor:0', feed_dict=feed_dict)]
 

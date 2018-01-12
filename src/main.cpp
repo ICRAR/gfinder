@@ -559,10 +559,28 @@ void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
     }
 
     //Track true/false positives/negatives
-    if(label_batch[i]){
-      if(preds[i] == 1){ t_pos++; correct++; }else{ f_pos++; incorrect++; }
+    if(preds[i] == 1){
+      //Predicton was a galaxy (pos)
+      if(label_batch[i]){
+        //Was a galaxy (T)
+        t_pos++;
+        correct++;
+      }else{
+        //Was noise (F)
+        f_pos++;
+        incorrect++;
+      }
     }else{
-      if(preds[i] == 0){ t_neg++; correct++; }else{ f_neg++; incorrect++; }
+      //Predicton was noise (neg)
+      if(label_batch[i]){
+        //Was a galaxy (F)
+        f_neg++;
+        incorrect++;
+      }else{
+        //Was noise (T)
+        t_neg++;
+        correct++;
+      }
     }
   }
 
