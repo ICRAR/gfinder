@@ -453,7 +453,7 @@ def new_graph(id,             #Unique identifier for saving the graph
 def new_basic_graph(id):
     #Create a graph
     new_graph(id,      #Id
-              filter_sizes=[8, 8],  #Convolutional layer filter sizes in pixels
+              filter_sizes=[6, 6],  #Convolutional layer filter sizes in pixels
               num_filters=[16, 36], #Number of filters in each Convolutional layer
               fc_size=128)          #Number of neurons in fully connected layer
 
