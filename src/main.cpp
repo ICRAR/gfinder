@@ -168,6 +168,7 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
             //"Your labels will make a fine addition to my ... collection"
             labels.push_back(l);
 
+            /*
             //Also push back slightly translated labels (<10px each way for better
             //generalisation)
             int translation = 4;
@@ -194,6 +195,7 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
               translated_l.isGalaxy = l.isGalaxy;
               labels.push_back(translated_l);
             }
+            */
           }
         }
         //Case closed

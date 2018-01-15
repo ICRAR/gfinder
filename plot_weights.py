@@ -2,4 +2,6 @@ from cnn import *
 
 #Main function
 if __name__ == "__main__":
-    plot_conv_weights("test-graph")
+    #Plot both conv layer filters
+    plot_conv_weights("test-graph", "conv_weights_0")
+    plot_conv_weights("test-graph", "conv_weights_1")

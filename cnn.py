@@ -9,7 +9,7 @@ import os                           #For file reading and warning suppression
 #Embedded python work around
 if not hasattr(sys, 'argv'):
     sys.argv = ['']
-    
+
 import shutil                       #For directory deletion
 import numpy as np                  #For transforming blocks
 import matplotlib.pyplot as plt     #For visualisation
@@ -61,17 +61,13 @@ def apply_frequency_cutoff(img_matrix, cutoff):
 #Uniquely saves a figure of the imgage represented by the supplied array
 #in the output folder
 def save_array_as_fig(img_array, name):
-    #Make sure there is a 0 pixel and a 255 pixel so colours are mapped correctly
-    #on heatmap
-    img_array[0][0][1] = 255;
-    img_array[0][0][0] = 0;
-
     #Create graph to ensure that block was read correctly
     fig = plt.figure(name, figsize=(15, 15), dpi=80)  #dims*dpi = res
 
     #Constrain axis proportions and plot
     plt.gca().set_aspect('equal', adjustable='box')
-    plt.imshow(img_array[0], cmap="Greys_r")
+    plt.imshow( img_array[0], cmap="Greys_r", vmin=0, vmax=255,
+                interpolation='nearest')
 
     fig.savefig("output/" + name)
 
@@ -205,6 +201,9 @@ def use_evaluation_unit_on_ncs( np_array,
             #here we use only uint8 because [0, 255] is all that we need
             image_input = np.reshape(np_array.astype(np.uint8),
                                     (1, WIDTH, HEIGHT))
+
+            save_array_as_fig(image_input, "test")
+
             pred = None             #Track the prediction
             if graph_ref.LoadTensor(image_input, "images"):
                 #Get output of graph
@@ -239,7 +238,7 @@ def deallocate_graph_from_ncs():
 '''
 
 #Plots the convolutional filter-weights for a given layer using matplotlib
-def plot_conv_weights(graph_name):
+def plot_conv_weights(graph_name, layer_name):
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
 
@@ -250,54 +249,42 @@ def plot_conv_weights(graph_name):
     saver = restore_model(graph_name, sess)
 
     #Retrieve the weights (don't need a feed dict as nothing is being calculated)
-    weights = [v for v in tf.global_variables() if v.name == "conv_weights_0:0"][0]
+    #A feed-dict is not necessary because nothing is calculated
+    w = sess.run([v for v in tf.global_variables() if v.name == (layer_name + ":0")][0])
 
-    '''THE FOLLOWING IS TAKEN FROM HVASS LABRATORIES NOTEBOOK AT THE FOLLOWING:
-    https://github.com/Hvass-Labs/TensorFlow-Tutorials/blob/master/02_Convolutional_Neural_Network.ipynb'''
-    # Retrieve the values of the weight-variables from TensorFlow.
-    # A feed-dict is not necessary because nothing is calculated.
-    w = sess.run(weights)
-
-    # Get the lowest and highest values for the weights.
-    # This is used to correct the colour intensity across
-    # the images so they can be compared with each other.
+    #Get the lowest and highest values for the weights to scale colour intensity
+    #across filters
     w_min = np.min(w)
     w_max = np.max(w)
 
-    # Number of filters used in the conv. layer.
+    #Number of filters used in the conv. layer. Should be 48
     num_filters = w.shape[3]
 
-    # Number of grids to plot.
-    # Rounded-up, square-root of the number of filters.
-    num_grids = math.ceil(math.sqrt(num_filters))
+    #Create figure with a grid of sub-plots (4x12)
+    fig, axes = plt.subplots(4, math.ceil(num_filters/4))
 
-    # Create figure with a grid of sub-plots.
-    fig, axes = plt.subplots(num_grids, num_grids)
-
-    # Plot all the filter-weights.
+    #Plot all the filter-weights.
     for i, ax in enumerate(axes.flat):
-        # Only plot the valid filter-weights.
-        if i<num_filters:
-            # Get the weights for the i'th filter of the input channel.
-            # See new_conv_layer() for details on the format
-            # of this 4-dim tensor.
+        #Only plot the valid filter-weights.
+        if i < num_filters:
+            #See new_conv_layer() for details on the format
+            #of this 4-dim tensor
             img = w[:, :, 0, i]
 
-            # Plot image.
+            #Plot image
             ax.imshow(img, vmin=w_min, vmax=w_max,
                       interpolation='nearest', cmap='Greys_r')
 
-        # Remove ticks from the plot.
+        #Remove ticks from the plot.
         ax.set_xticks([])
         ax.set_yticks([])
 
-    fig.savefig("output/weights")
+    fig.savefig("output/" + layer_name)
 
     #Explicity close figure for memory usage
     plt.close(fig)
 
-
-    #Close tensorflow session
+    #Close tensorflow session (no need to save)
     sess.close()
 
 #Helper function for creating filters as a tensorflow variable within each layer
