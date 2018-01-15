@@ -66,7 +66,7 @@ def save_array_as_fig(img_array, name):
 
     #Constrain axis proportions and plot
     plt.gca().set_aspect('equal', adjustable='box')
-    plt.imshow( img_array[0], cmap="Greys_r", vmin=0, vmax=255,
+    plt.imshow( img_array[0], cmap="Greys_r", vmin=0.0, vmax=1.0,
                 interpolation='nearest')
 
     fig.savefig("output/" + name)
@@ -94,9 +94,17 @@ def use_supervised_batch(   image_data_batch,
     image_input = []
     label_input = []
     for i in range(0, batch_size):
-        #Convert to uint8 ([0, 255] is all that's needed) and placeholder dimensions
-        image_input.append(np.reshape   (image_data_batch[i].astype(np.uint8),
-                                        (WIDTH, HEIGHT)))
+        #Reshape to placeholder dimensions
+        single_image = np.reshape(image_data_batch[i], (WIDTH, HEIGHT))
+
+        #Feed in as tensorflow supported datatype (float32) scaled [0,1]
+        single_image = np.float32(single_image)
+        mn = np.min(single_image)
+        mx = np.max(single_image)
+        single_image = ((single_image - mn)*1/(mx - mn))
+
+        image_input.append(single_image)
+
         #Convert label input into array of scalar arrays
         label_input.append([label_batch[i]])
 
@@ -197,18 +205,23 @@ def use_evaluation_unit_on_ncs( np_array,
             graph_ref = device.AllocateGraph(graph_file)
 
             #Run the graph with input and retrieve the result
-            #Movidius ncsdk doesn't support full precision floats (float32),
-            #here we use only uint8 because [0, 255] is all that we need
-            image_input = np.reshape(np_array.astype(np.uint8),
-                                    (1, WIDTH, HEIGHT))
+            #Movidius ncsdk doesn't support full precision floats (float32)
+            #Reshape to placeholder constraints of graph
+            image_input = np.reshape(np_array, (1, WIDTH, HEIGHT))
+            #Feed in as a Movidius NCS supported datatype
+            #(float16) scaled [0,1]
+            image_input = np.float32(image_input)
+            mn = np.min(image_input)
+            mx = np.max(image_input)
+            image_input = np.float16((image_input - mn)*1/(mx - mn))
 
-            save_array_as_fig(image_input, "test")
-
-            pred = None             #Track the prediction
+            #Track the prediction
+            pred = None
             if graph_ref.LoadTensor(image_input, "images"):
                 #Get output of graph
                 output, userobj = graph_ref.GetResult()
                 #print("GALAXY" if output[0] > 0.5 else "NOISE")
+                print(output)
                 pred = output[0] > 0.5
 
             else:
@@ -494,12 +507,12 @@ def new_graph(id,             #Unique identifier for saving the graph
 
 #Wraps the above to make a very basic convolutional neural network
 def new_basic_graph(id):
-    #Create a graph, if number of filters is any larger then network will
-    #not be Movidius NCS compatible
+    #Create a graph, if graph is any larger then network will
+    #not be Movidius NCS compatible (reason unknown)
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
-              num_filters=[48, 48], #Number of filters in each Convolutional layer
-              fc_sizes=[384, 192])          #Number of neurons in fully connected layer
+              num_filters=[16, 32], #Number of filters in each Convolutional layer
+              fc_sizes=[128, 64])          #Number of neurons in fully connected layer
 
     #Save it in a tensorflow session
     sess = tf.Session()

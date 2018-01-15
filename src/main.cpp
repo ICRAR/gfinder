@@ -516,8 +516,8 @@ void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg,
   for(int i = 0; i < 3; i++){
       cout << std::setfill('-') << std::setw(9) << "+";
   }
-  cout << std::setfill(' ') << std::setw(18) << std::right << " " << "|--> "
-    << "BATCH ACCURACY: "
+  cout << std::setfill(' ') << std::setw(18) << std::right << " " << "|-->"
+    << " BATCH ACCURACY: "
     << 100*(double)(correct)/(double)(incorrect + correct) << "%\n";
 
   std::ostringstream inc_oss;
@@ -540,7 +540,10 @@ void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg,
     << std::setfill(' ') << std::setw(digits) << std::left << t_pos + f_pos << " | "  //Galaxy guesses
     << std::setfill(' ') << std::setw(digits) << std::left << f_neg + t_neg << " | "  //Noise guesses
     << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg + f_pos + f_neg << " | "
-    << " SESSION ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%\n";
+    << " SESSION ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%"
+    << " NOISE ID RATE: " << (f_pos + t_neg == 0 ? 100 : 100*(double)(t_neg)/(double)(t_neg + f_pos)) << "%"
+    << " GALAXY ID RATE: " << (t_pos + f_neg == 0 ? 100 : 100*(double)(t_pos)/(double)(t_pos + f_neg)) << "%"
+    << "\n";
   cout << std::resetiosflags(std::ios::adjustfield);
 
   cout << "\t\t+";
