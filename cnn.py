@@ -66,7 +66,7 @@ def save_array_as_fig(img_array, name):
 
     #Constrain axis proportions and plot
     plt.gca().set_aspect('equal', adjustable='box')
-    plt.imshow( img_array[0], cmap="Greys_r", vmin=0.0, vmax=1.0,
+    plt.imshow( img_array[0], cmap="Greys_r", vmin=0, vmax=255,
                 interpolation='nearest')
 
     fig.savefig("output/" + name)
@@ -97,12 +97,13 @@ def use_supervised_batch(   image_data_batch,
         #Reshape to placeholder dimensions
         single_image = np.reshape(image_data_batch[i], (WIDTH, HEIGHT))
 
-        #Feed in as tensorflow supported datatype (float32) scaled [0,1]
-        single_image = np.float32(single_image)
-        mn = np.min(single_image)
-        mx = np.max(single_image)
-        single_image = ((single_image - mn)*1/(mx - mn))
+        #Cast to 8-bit unsigned integer
+        single_image = np.uint8(single_image)
 
+        #Feed in as tensorflow supported datatype (float32) scaled [0,1]
+        single_image = np.float16(single_image)
+
+        #Add to what will become feed dict
         image_input.append(single_image)
 
         #Convert label input into array of scalar arrays
@@ -208,12 +209,15 @@ def use_evaluation_unit_on_ncs( np_array,
             #Movidius ncsdk doesn't support full precision floats (float32)
             #Reshape to placeholder constraints of graph
             image_input = np.reshape(np_array, (1, WIDTH, HEIGHT))
+
             #Feed in as a Movidius NCS supported datatype
-            #(float16) scaled [0,1]
-            image_input = np.float32(image_input)
-            mn = np.min(image_input)
-            mx = np.max(image_input)
-            image_input = np.float16((image_input - mn)*1/(mx - mn))
+            image_input = np.uint8(image_input)
+
+            #Get a copy of image if required
+            save_array_as_fig(image_input, "test")
+
+            #Finally to float16
+            image_input = np.float16(image_input)
 
             #Track the prediction
             pred = None

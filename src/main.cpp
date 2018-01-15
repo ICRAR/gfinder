@@ -857,6 +857,10 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
   //Decompress using a sliding window
   //spacial coordinates using kakadu decompressor
   kdu_region_decompressor decompressor;
+
+  //For consistency between decompressions, set true scaling
+  //decompressor.set_true_scaling(true, false);
+
   for(int c = start_component_index; c <= final_component_index; c++){
     //For consistency
     int component_index = c;
