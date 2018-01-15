@@ -2,7 +2,8 @@
 
 //For example:  ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,900
 //              ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 901,993
-//              ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -e 120,1580,50,80 -r 0 -c 994,994
+//              ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -e 165,1640,35,40 -r 0 -c 994,994
+
 
 //C++ standard includes
 #include <iostream>     //For cout
@@ -36,6 +37,11 @@ using std::cout;
 using std::min;
 using std::max;
 using std::vector;
+
+//Input sizes of images (in pixels) to be fed to graph
+//Must reflect changes in Python file's globals
+const int INPUT_WIDTH = 32;
+const int INPUT_HEIGHT = 32;
 
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //
@@ -145,10 +151,10 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
           //right (v3) vertices. Note that the bounding box for the galaxy labels
           //is VERY large (100x100 pixels) so is shrunk to 30x30 pixels for
           //decompression
-          l.tlx = v1.get_x() + 35;
-          l.tly = v1.get_y() + 35;
-          l.brx = v3.get_x() - 35;
-          l.bry = v3.get_y() - 35;
+          l.tlx = v1.get_x() + (100 - INPUT_WIDTH)/2;
+          l.tly = v1.get_y() + (100 - INPUT_HEIGHT)/2;
+          l.brx = v3.get_x() - (100 - INPUT_WIDTH)/2;
+          l.bry = v3.get_y() - (100 - INPUT_HEIGHT)/2;
 
           //Also need the frequency location to triangulate the roi, which can
           //be found in nlst
@@ -196,7 +202,7 @@ void generate_false_labels( vector<label> & labels, int start_component_index,
   //Range of components
   int range = final_component_index - start_component_index + 1; //+1 because inclusive
   //Required number of noise labels to be found
-  int req = 10*labels.size();
+  int req = 4*labels.size();
   //The width and height of galaxy labels
   int w = labels[0].brx - labels[0].tlx;
   int h = labels[0].bry - labels[0].tly;
@@ -408,7 +414,7 @@ PyObject *get_supervised_batch( vector<kdu_uint32*> image_data_batch,
 
   //Create a list of 1D image data arrays as a Python list
   PyObject* image_data_batch_py = PyList_New(image_data_batch.size());
-  npy_intp len = 30*30;  //Length of one 1D array
+  npy_intp len = INPUT_WIDTH*INPUT_HEIGHT;  //Length of one 1D array
 
   //Create a list of booleans as a Python list
   PyObject* label_batch_py = PyList_New(label_batch.size());
@@ -765,23 +771,21 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
 
 //Converts 1D kdu_uint32 to 1D numpy array with dimension info for passing to python
 //for evaluation
-PyObject *get_evaluation_unit(kdu_uint32 array[], int width, int height,
+PyObject *get_evaluation_unit(kdu_uint32 array[],
                               char *graph_name)
 {
   //Dimension of array
-  npy_intp dim = width*height;
+  npy_intp dim = INPUT_WIDTH*INPUT_HEIGHT;
 
   //Build value that can be passed to python function. Value is a 1 dimensional
   //w x h array of uint32s with the dimensions and spacing info appended as a tuple
-  PyObject* evaluation_unit = Py_BuildValue("(O, i, i, s)",
+  PyObject* evaluation_unit = Py_BuildValue("(O, s)",
     PyArray_SimpleNewFromData (
                                 1,
                                 &dim,
                                 NPY_UINT32,
                                 (void *)array
                               ),
-    width,
-    height,
     graph_name
   );
 
@@ -803,8 +807,6 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
   //possible region is fed to the neural network graph to test if it holds a
   //galaxy. The result is crunched to find the area that most likely holds
   //a galaxy based on the results for nearby regions
-  int window_width = 30;
-  int window_height = 30;
   int stride_x = 5;
   int stride_y = 5;
   int image_width = limit_rect_x + limit_rect_w;
@@ -832,9 +834,9 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
         //Construct a region from the label data
         kdu_dims region;
         region.access_pos()->set_x(x);
-        region.access_size()->set_x(window_width);
+        region.access_size()->set_x(INPUT_WIDTH);
         region.access_pos()->set_y(y);
-        region.access_size()->set_y(window_height);
+        region.access_size()->set_y(INPUT_HEIGHT);
 
         //TODO: variable
         int discard_levels = 0;
@@ -929,10 +931,8 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
 
         //Finished decompressing here, pass it to the network graph for evaluation
         //Pass kdu_uint32 as numpy array into python3 tensorflow.
-        PyObject* numpy_array = get_evaluation_unit(
+        PyObject* evaluation_unit = get_evaluation_unit(
           buffer,                         //Data
-          region.access_size()->get_x(),  //Label dims (required for indexing into 2D)
-          region.access_size()->get_y(),
           graph_name                      //Graph to train on
         );
 
@@ -944,11 +944,12 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
         PyObject* py_module = PyImport_Import(py_name);
         PyErr_Print();
         //Get function name from module
-        PyObject* py_func   = PyObject_GetAttrString(py_module, (char*)"use_evaluation_unit");
+        PyObject* py_func   = PyObject_GetAttrString(py_module,
+                                (char*)"use_evaluation_unit_on_ncs");
         PyErr_Print();
         //Call function with numpy aray
         PyObject* py_result;
-        py_result = PyObject_CallObject(py_func, numpy_array);
+        py_result = PyObject_CallObject(py_func, evaluation_unit);
         PyErr_Print();
         //Use the results to track successes
         int prediction = -1;
