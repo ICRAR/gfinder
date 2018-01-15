@@ -230,7 +230,7 @@ void generate_false_labels( vector<label> & labels, int start_component_index,
   //Range of components
   int range = final_component_index - start_component_index + 1; //+1 because inclusive
   //Required number of noise labels to be found
-  int req = 4*labels.size();
+  int req = labels.size();
   //The width and height of galaxy labels
   int w = labels[0].brx - labels[0].tlx;
   int h = labels[0].bry - labels[0].tly;

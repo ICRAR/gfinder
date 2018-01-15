@@ -504,14 +504,13 @@ def new_graph(id,             #Unique identifier for saving the graph
     optimiser = tf.train.AdamOptimizer(learning_rate=alpha).minimize(cost)
     print("\t\t-Optimiser: alpha=" + str(alpha) + ", " + str(optimiser.name))
 
-
 #Wraps the above to make a very basic convolutional neural network
 def new_basic_graph(id):
     #Create a graph, if graph is any larger then network will
     #not be Movidius NCS compatible (reason unknown)
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
-              num_filters=[16, 32], #Number of filters in each Convolutional layer
+              num_filters=[64, 64], #Number of filters in each Convolutional layer
               fc_sizes=[128, 64])          #Number of neurons in fully connected layer
 
     #Save it in a tensorflow session
