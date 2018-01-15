@@ -1,7 +1,7 @@
 //Compile with makefile provided
 
-//For example:  ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,900
-//              ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 901,993
+//For example:  ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,899
+//              ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 900,993
 //              ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -e 165,1640,35,40 -r 0 -c 994,994
 
 
@@ -167,6 +167,33 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
           if(l.f >= start_component_index && l.f <= final_component_index){
             //"Your labels will make a fine addition to my ... collection"
             labels.push_back(l);
+
+            //Also push back slightly translated labels (<10px each way for better
+            //generalisation)
+            int translation = 4;
+            int x;
+            int y;
+            for(int i = 0; i < 4; i++){
+              if(i == 0){
+                x = -1; y = 0;
+              }else if(i == 1){
+                x = 1;  y = 0;
+              }else if(i == 2){
+                x = 0;  y = -1;
+              }else if(i == 3){
+                x = 0;  y = 1;
+              }
+
+              //Goes through four combinations (-1,0), (1,0), (0,-1), (0,1)
+              label translated_l;
+              translated_l.tlx  = l.tlx + translation*x;
+              translated_l.tly  = l.tly + translation*y;
+              translated_l.brx  = l.brx + translation*x;
+              translated_l.bry  = l.bry + translation*y;
+              translated_l.f    = l.f;
+              translated_l.isGalaxy = l.isGalaxy;
+              labels.push_back(translated_l);
+            }
           }
         }
         //Case closed
@@ -202,7 +229,7 @@ void generate_false_labels( vector<label> & labels, int start_component_index,
   //Range of components
   int range = final_component_index - start_component_index + 1; //+1 because inclusive
   //Required number of noise labels to be found
-  int req = 4*labels.size();
+  int req = labels.size();
   //The width and height of galaxy labels
   int w = labels[0].brx - labels[0].tlx;
   int h = labels[0].bry - labels[0].tly;

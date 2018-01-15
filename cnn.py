@@ -3,25 +3,21 @@
 #Visualise with: 'tensorboard --logdir='logs''
 
 #Imports
-import sys              #For exiting
+import sys                          #For embedded python workaround
+import os                           #For file reading and warning suppression
 
 #Embedded python work around
 if not hasattr(sys, 'argv'):
     sys.argv = ['']
-
-from mvnc import mvncapi as mvnc    #For Movidius NCS API
-import os                           #For file reading and warning suppression
+    
 import shutil                       #For directory deletion
 import numpy as np                  #For transforming blocks
 import matplotlib.pyplot as plt     #For visualisation
-import tensorflow as tf             #For deep learning
 import math                         #For logs
 import time                         #For debugging with catchup
 import subprocess                   #For compiling graphs
-
-#Global variables
-GRAPHS_FOLDER = "./graphs"
-LOGS_FOLDER = "./logs"
+import tensorflow as tf             #For deep learning
+from mvnc import mvncapi as mvnc    #For Movidius NCS API
 
 #Set suppressed logging level for Movidius NCS API
 mvnc.SetGlobalOption(mvnc.GlobalOption.LOG_LEVEL, 1)
@@ -31,6 +27,12 @@ tf.logging.set_verbosity(tf.logging.ERROR)
 os.environ['TF_CPP_MIN_LOG_LEVEL']='1'  #1 filters all
                                         #2 filters warnings
                                         #3 filters none
+
+
+#Global variables
+#Relative paths
+GRAPHS_FOLDER = "./graphs"
+LOGS_FOLDER = "./logs"
 
 #Hardcoded image input dimensions
 WIDTH = 32
@@ -125,7 +127,7 @@ def use_supervised_batch(   image_data_batch,
     return preds
 
 #Recieves a unit and evaluates it using the graph
-def use_evaluation_unit(np_array,
+def use_evaluation_unit_on_cpu(np_array,
                         graph_name):
 
     #Convert to uint8, [0, 255] is all that's needed
@@ -206,7 +208,6 @@ def use_evaluation_unit_on_ncs( np_array,
             pred = None             #Track the prediction
             if graph_ref.LoadTensor(image_input, "images"):
                 #Get output of graph
-                print("Evaluating output of neural network ... ", end="")
                 output, userobj = graph_ref.GetResult()
                 #print("GALAXY" if output[0] > 0.5 else "NOISE")
                 pred = output[0] > 0.5
