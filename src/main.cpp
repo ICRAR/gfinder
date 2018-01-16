@@ -42,6 +42,13 @@ using std::vector;
 const int INPUT_WIDTH = 32;
 const int INPUT_HEIGHT = 32;
 
+//Number of images to feed per batch
+const int BATCH_SIZE = 32;
+
+//Whether or not to reun evaluation of CPU or NCS'
+const bool EVALUATE_ON_NCS = false;
+
+
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //
 //----------------------------------------------------------------------------//
@@ -767,7 +774,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     label_batch.push_back(labels[l].isGalaxy);
 
     //Optimise over a batch (reduces noise in the cost function)
-    if(image_data_batch.size() == 128){
+    if(image_data_batch.size() == BATCH_SIZE){
       //Feed in the batch
       feed_batch_and_print_results( image_data_batch, label_batch,
                                     t_pos, f_pos, t_neg, f_neg,
@@ -979,18 +986,24 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
         PyObject* py_module = PyImport_Import(py_name);
         PyErr_Print();
         //Get function name from module
-        PyObject* py_func   = PyObject_GetAttrString(py_module,
-                                (char*)"use_evaluation_unit_on_ncs");
+        PyObject* py_func;
+        if(EVALUATE_ON_NCS){
+          py_func = PyObject_GetAttrString(py_module,
+                                          (char*)"use_evaluation_unit_on_ncs");
+        }else{
+          py_func = PyObject_GetAttrString(py_module,
+                                          (char*)"use_evaluation_unit_on_cpu");
+        }
         PyErr_Print();
         //Call function with numpy aray
         PyObject* py_result;
         py_result = PyObject_CallObject(py_func, evaluation_unit);
         PyErr_Print();
         //Use the results to track successes
-        int prediction = -1;
+        double prediction = -1;
         if(py_result != NULL){
           //PyObject_IsTrue returns 1 if py_result is true and 0 if it is false
-          prediction = PyObject_IsTrue(py_result);
+          prediction = PyFloat_AsDouble(py_result);
         }else{
           cout << "Error: embedded python3 evaluation function returning incorrectly\n";
         }
@@ -999,7 +1012,8 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
         evaluation_units_fed++;
         cout << "\t-evaluation unit " << evaluation_units_fed << "/"
           << evaluation_units_expected <<  " fed to network, prediction: "
-          << ((prediction == 1) ? "galaxy\n" : "not galaxy\n");
+          << ((prediction > 0.5) ? "galaxy" : "not galaxy")
+          << " (" << prediction << ")\n";
       }
       cols_fed++;
       cout << "\t\t-col " << cols_fed << "/"

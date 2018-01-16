@@ -66,13 +66,36 @@ def save_array_as_fig(img_array, name):
 
     #Constrain axis proportions and plot
     plt.gca().set_aspect('equal', adjustable='box')
-    plt.imshow( img_array[0], cmap="Greys_r", vmin=0, vmax=255,
+    plt.imshow( img_array, cmap="Greys_r", vmin=0, vmax=255,
                 interpolation='nearest')
 
     fig.savefig("output/" + name)
 
     #Explicity close figure for memory usage
     plt.close(fig)
+
+#Transforms the standard uint8 1 channel image gotten from the Kakadu SDK into
+#a three channel RGB (redundant channels) half precision float (float16) image
+#such that it is compatible with the Movidius NCS architecture
+def make_compatible(image_data, save_image):
+    #Reshape to placeholder dimensions
+    output = np.reshape(image_data, (WIDTH, HEIGHT))
+
+    #Cast to 8-bit unsigned integer
+    output = np.uint8(output)
+
+    #Output an image if required while uint8
+    if save_image:
+        save_array_as_fig(output, 'test')
+
+    #Now cast
+    output = np.float16(output)
+
+    #Add two more channels to get RBG
+    output = np.dstack([output]*3)
+
+    #Give it back
+    return output
 
 #Recieves a training unit and trains the graph on it
 def use_supervised_batch(   image_data_batch,
@@ -94,17 +117,8 @@ def use_supervised_batch(   image_data_batch,
     image_input = []
     label_input = []
     for i in range(0, batch_size):
-        #Reshape to placeholder dimensions
-        single_image = np.reshape(image_data_batch[i], (WIDTH, HEIGHT))
-
-        #Cast to 8-bit unsigned integer
-        single_image = np.uint8(single_image)
-
-        #Feed in as tensorflow supported datatype (float32) scaled [0,1]
-        single_image = np.float16(single_image)
-
-        #Add to what will become feed dict
-        image_input.append(single_image)
+        #Transform to tensorflow/Movidius NCS compatible and add to list of input
+        image_input.append(make_compatible(image_data_batch[i], False))
 
         #Convert label input into array of scalar arrays
         label_input.append([label_batch[i]])
@@ -132,11 +146,12 @@ def use_supervised_batch(   image_data_batch,
     return preds
 
 #Recieves a unit and evaluates it using the graph
-def use_evaluation_unit_on_cpu(np_array,
-                        graph_name):
+def use_evaluation_unit_on_cpu( np_array,
+                                graph_name):
 
-    #Convert to uint8, [0, 255] is all that's needed
-    image_input = np.reshape(np_array.astype(np.uint8), (1, WIDTH, HEIGHT))
+    #Convert to tensorflow/Movidius NCS compatible
+    image_input = []
+    image_input.append(make_compatible(np_array, True))
 
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
@@ -147,14 +162,13 @@ def use_evaluation_unit_on_cpu(np_array,
     #Load the graph to be trained & keep the saver for later updating
     saver = restore_model(graph_name, sess)
 
-    #Save a copy of image if required
-    save_array_as_fig(image_input, "test")
-
     #Create a unitary feeder dictionary
     feed_dict_eval = {'images:0': image_input}
 
     #Get the prediction
-    pred = sess.run('predictor:0', feed_dict=feed_dict_eval)[0] > 0.5
+    pred = sess.run('predictor:0', feed_dict=feed_dict_eval)[0]
+    #print(sess.run('conv_0:0', feed_dict=feed_dict_eval).shape)
+    #print(sess.run('conv_0:0', feed_dict=feed_dict_eval))
 
     #Close tensorflow session
     sess.close()
@@ -171,11 +185,10 @@ def compile_and_allocate_graph_onto_ncs(graph_name):
 def use_evaluation_unit_on_ncs( np_array,
                                 graph_name):
     #Compile graph with subprocess
-    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images
-    #-on=predictor -o=./graphs/test-graph/test-graph-compiled'
+    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-compiled'
     subprocess.call([
         'mvNCCompile', (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + ".meta"),
-        "-in=images", "-on=predictor",
+        "-in=images", "-on=conv_0",
         "-o=" + (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-compiled")
     ],
     stdout=open(os.devnull, 'wb')); #Suppress output
@@ -205,28 +218,20 @@ def use_evaluation_unit_on_ncs( np_array,
             #print("Allocating compiled graph onto device")
             graph_ref = device.AllocateGraph(graph_file)
 
-            #Run the graph with input and retrieve the result
-            #Movidius ncsdk doesn't support full precision floats (float32)
-            #Reshape to placeholder constraints of graph
-            image_input = np.reshape(np_array, (1, WIDTH, HEIGHT))
-
-            #Feed in as a Movidius NCS supported datatype
-            image_input = np.uint8(image_input)
-
-            #Get a copy of image if required
-            save_array_as_fig(image_input, "test")
-
-            #Finally to float16
-            image_input = np.float16(image_input)
+            #Convert to tensorflow/Movidius NCS compatible
+            image_input = []
+            image_input.append(make_compatible(np_array, True))
 
             #Track the prediction
             pred = None
-            if graph_ref.LoadTensor(image_input, "images"):
+            if graph_ref.LoadTensor(make_compatible(np_array, True), "images"):
                 #Get output of graph
                 output, userobj = graph_ref.GetResult()
+
                 #print("GALAXY" if output[0] > 0.5 else "NOISE")
+                print(output.shape)
                 print(output)
-                pred = output[0] > 0.5
+                pred = output[0]
 
             else:
                 print("Error evaluating output of neural network, continue")
@@ -316,7 +321,7 @@ def new_biases(length, var_name):
 
 #Helper function for creating a new convolution layer in a graph
 def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
-                   num_inputs,         #number of images to be input
+                   num_input_channels, #how many channels in input image
                    filter_size,        #width & height of each filter
                    num_filters,        #number of filters
                    conv_index):        #for naming
@@ -326,7 +331,7 @@ def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
 
     #Create filters with a given shape to be optimised over graph execution
     #rank must be 4 for tensorflow
-    weights = new_weights(  shape=[filter_size, filter_size, num_inputs, num_filters],
+    weights = new_weights(  shape=[filter_size, filter_size, num_input_channels, num_filters],
                             var_name=("conv_weights_" + conv_index))
 
     #Create biases to be optimised over graph execution
@@ -413,14 +418,17 @@ def new_graph(id,             #Unique identifier for saving the graph
     print("Creating new graph: '" + id + "'")
     print("\t*Structure details:")
 
+    #Movidius NCS requires an RGB 'colour' image
+    channels = 3
+
     #INPUT
     #Placeholders serve as variable input to the graph (can be changed when run)
     #Following placeholder takes 30x30 grayscale images as tensors
     #(must be float32 for convolution and must be 4D for tensorflow)
-    images = tf.placeholder("float", shape=[None, WIDTH, HEIGHT], name='images')
+    images = tf.placeholder(tf.float32, shape=[None, WIDTH, HEIGHT, channels], name='images')
     print("\t\t-Placeholder '" + images.name + "': " + str(images))
-    images_4d = tf.reshape(images, shape=[-1, WIDTH, HEIGHT, 1], name='images_to_4d')
-    print("\t\t-Images reshaper '" + images_4d.name + "': " + str(images_4d))
+    #images_4d = tf.reshape(images, shape=[-1, WIDTH, HEIGHT, 3], name='images_to_4d')
+    #print("\t\t-Images reshaper '" + images_4d.name + "': " + str(images_4d))
 
     #and supervisory signals which are boolean (is or is not a galaxy)
     labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
@@ -432,8 +440,8 @@ def new_graph(id,             #Unique identifier for saving the graph
     #be optimised during graph execution. They also down-sample (pool) the image
     #after doing so. Filters are created in accordance with the arguments to this
     #function
-    layer_conv0, weights_conv0 = new_conv_layer(prev_layer=images_4d,
-                                                num_inputs=1,
+    layer_conv0, weights_conv0 = new_conv_layer(prev_layer=images,
+                                                num_input_channels=channels,
                                                 filter_size=filter_sizes[0],
                                                 num_filters=num_filters[0],
                                                 conv_index=0)
@@ -441,7 +449,7 @@ def new_graph(id,             #Unique identifier for saving the graph
 
     #layer 2 takes layer 1's output
     layer_conv1, weights_conv1 = new_conv_layer(prev_layer=layer_conv0,
-                                                num_inputs=num_filters[0],
+                                                num_input_channels=num_filters[0],
                                                 filter_size=filter_sizes[1],
                                                 num_filters=num_filters[1],
                                                 conv_index=1)
@@ -515,7 +523,7 @@ def new_basic_graph(id):
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
               num_filters=[64, 64], #Number of filters in each Convolutional layer
-              fc_sizes=[128, 64])          #Number of neurons in fully connected layer
+              fc_sizes=[256, 128])          #Number of neurons in fully connected layer
 
     #Save it in a tensorflow session
     sess = tf.Session()
