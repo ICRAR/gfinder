@@ -166,7 +166,7 @@ def use_evaluation_unit_on_cpu( np_array,
     saver = restore_model(graph_name, sess)
 
     #Create a unitary feeder dictionary
-    feed_dict_eval = {'images:0': image_input}
+    feed_dict_eval = {'images:0': image_input, 'is_training': false}
 
     #Get the prediction
     pred = sess.run('predictor:0', feed_dict=feed_dict_eval)[0]
@@ -187,19 +187,11 @@ def compile_and_allocate_graph_onto_ncs(graph_name):
 #Recieves a unit and evaluates it using the graph on 1 or more Movidius NCS'
 def use_evaluation_unit_on_ncs( np_array,
                                 graph_name):
-    #Compile graph with subprocess
-    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-compiled'
-    subprocess.call([
-        'mvNCCompile', (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + ".meta"),
-        "-in=images", "-on=predictor",
-        "-o=" + (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-compiled")
-    ],
-    stdout=open(os.devnull, 'wb')); #Suppress output
-
     #Load the compiled graph
     #print("Loading compiled graph")
     graph_file = None;
-    with open(GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-compiled", mode='rb') as f:
+    filepath = GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph"
+    with open(filepath, mode='rb') as f:
         #Read it in
         graph_file = f.read()
 
@@ -418,7 +410,11 @@ def new_fc_layer(prev_layer,         #the previous layer (input to this layer)
 def new_graph(id,             #Unique identifier for saving the graph
               filter_sizes,   #Filter dims for each convolutional layer (kernals)
               num_filters,    #Number of filters for each convolutional layer
-              fc_sizes):      #Number of neurons in fully connected layers
+              fc_sizes,       #Number of neurons in fully connected layers
+              for_training):  #The Movidius NCS' are picky and won't resolve unknown
+                              #placeholders. For loading onto the NCS these, and other
+                              #training structures (optimizer, dropout, batch normalisation)
+                              #all must go
 
     #Create computational graph to represent the neural net:
     print("Creating new graph: '" + id + "'")
@@ -433,11 +429,13 @@ def new_graph(id,             #Unique identifier for saving the graph
     #(must be float32 for convolution and must be 4D for tensorflow)
     images = tf.placeholder(tf.float32, shape=[None, WIDTH, HEIGHT, channels], name='images')
     print("\t\t-Placeholder '" + images.name + "': " + str(images))
-    #and supervisory signals which are boolean (is or is not a galaxy)
-    labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
-    print("\t\t-Placeholder '" + labels.name + "': " + str(labels))
-    #Whether or not we are training (for batch normalisation)
-    is_training = tf.placeholder(tf.bool, name='is_training')
+
+    if for_training:
+        #and supervisory signals which are boolean (is or is not a galaxy)
+        labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
+        print("\t\t-Placeholder '" + labels.name + "': " + str(labels))
+        #Whether or not we are training (for batch normalisation)
+        is_training = tf.placeholder(tf.bool, name='is_training')
 
     #CONVOLUTIONAL LAYERS
     #These convolutional layers sequentially take inputs and create/apply filters
@@ -477,20 +475,22 @@ def new_graph(id,             #Unique identifier for saving the graph
                              fc_index=0)
     print("\t\t-Fully connected 0: " + str(layer_fc0))
 
-    #Apply batch normalisation after ReLU
-    layer_bn0 = tf.layers.batch_normalization(layer_fc0, training=is_training)
+    if for_training:
+        #Apply batch normalisation after ReLU
+        layer_fc0 = tf.layers.batch_normalization(layer_fc0, training=is_training)
 
-    layer_fc1 = new_fc_layer(prev_layer=layer_bn0,
+    layer_fc1 = new_fc_layer(prev_layer=layer_fc0,
                              num_inputs=fc_sizes[0],
                              num_outputs=fc_sizes[1],
                              final_fc_layer=False,
                              fc_index=1)
     print("\t\t-Fully connected 1: " + str(layer_fc1))
 
-    #Apply batch normalisation after ReLU
-    layer_bn1 = tf.layers.batch_normalization(layer_fc1, training=is_training)
+    if for_training:
+        #Apply batch normalisation after ReLU
+        layer_fc1 = tf.layers.batch_normalization(layer_fc1, training=is_training)
 
-    layer_fc2 = new_fc_layer(prev_layer=layer_bn1,
+    layer_fc2 = new_fc_layer(prev_layer=layer_fc1,
                              num_inputs=fc_sizes[1],
                              num_outputs=1,
                              final_fc_layer=True,
@@ -507,44 +507,87 @@ def new_graph(id,             #Unique identifier for saving the graph
     prediction = tf.nn.sigmoid(layer_fc2, name='predictor')
     print("\t\t-Class prediction: " + str(prediction))
 
-    #Backpropogation details
-    print("\t*Backpropagation details:")
 
-    #COST FUNCTION
-    #Cost function is cross entropy (+ve and approaches zero as the model output
-    #approaches the desired output
-    cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=layer_fc2,
-                                                            labels=labels,
-                                                            name='sigmoid_cross_entropy')
-    print("\t\t-Cross entropy: " + str(cross_entropy))
-    cost = tf.reduce_mean(cross_entropy, name='loss')
-    print("\t\t-Loss: " + str(cost))
+    if for_training:
+        #Backpropogation details
+        print("\t*Backpropagation details:")
 
-    #OPTIMISATION FUNCTION
-    #Optimisation function to Optimise cross entropy will be Adam optimizer
-    #(advanced gradient descent)
+        #COST FUNCTION
+        #Cost function is cross entropy (+ve and approaches zero as the model output
+        #approaches the desired output
+        cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=layer_fc2,
+                                                                labels=labels,
+                                                                name='sigmoid_cross_entropy')
+        print("\t\t-Cross entropy: " + str(cross_entropy))
+        cost = tf.reduce_mean(cross_entropy, name='loss')
+        print("\t\t-Loss: " + str(cost))
 
-    #Require the following extra ops due to batch normalisation
-    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-    with tf.control_dependencies(extra_update_ops):
-        alpha = 8e-4    #Learning rate
-        optimiser = tf.train.AdamOptimizer(learning_rate=alpha).minimize(cost)
+        #OPTIMISATION FUNCTION
+        #Optimisation function to Optimise cross entropy will be Adam optimizer
+        #(advanced gradient descent)
 
-    print("\t\t-Optimiser: alpha=" + str(alpha) + ", " + str(optimiser.name))
+        #Require the following extra ops due to batch normalisation
+        extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(extra_update_ops):
+            alpha = 5e-4    #Learning rate
+            optimiser = tf.train.AdamOptimizer(learning_rate=alpha).minimize(cost)
 
-#Wraps the above to make a very basic convolutional neural network
-def new_basic_graph(id):
+        print("\t\t-Optimiser: alpha=" + str(alpha) + ", " + str(optimiser.name))
+
+#Wraps the above to make a basic convolutional neural network for binary
+#image classification
+def new_basic_training_graph(id):
     #Create a graph, if graph is any larger then network will
     #not be Movidius NCS compatible (reason unknown)
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
               num_filters=[64, 64], #Number of filters in each Convolutional layer
-              fc_sizes=[256, 128])          #Number of neurons in fully connected layer
+              fc_sizes=[256, 128],  #Number of neurons in fully connected layer
+              for_training=True)
 
     #Save it in a tensorflow session
     sess = tf.Session()
     save_model_as_meta(id, sess)
     sess.close()
+
+#Must occur pre NCS usage, creates a version of the .meta file without any
+#placeholders that aren't required for validation (otherwise will fail)
+def compile_for_ncs(id):
+    #Create a graph, if graph is any larger then network will
+    #not be Movidius NCS compatible (reason unknown)
+    new_graph(id,      #Id/name
+              filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
+              num_filters=[64, 64], #Number of filters in each Convolutional layer
+              fc_sizes=[256, 128],  #Number of neurons in fully connected layer
+              for_training=False)
+
+    #Prepare to save all this stuff
+    saver = tf.train.Saver(tf.global_variables())
+
+    #A session is required
+    sess = tf.Session()
+
+    #Initialise no placeholder architecture
+    sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
+
+    #Load in weights from trained graph
+    saver.restore(sess, GRAPHS_FOLDER + "/" + id + "/" + id)
+
+    #Save without placeholders
+    saver.save(sess, GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs")
+
+    #Finish session
+    sess.close()
+
+    #Compile graph with subprocess for NCS
+    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-compiled'
+    subprocess.call([
+        'mvNCCompile', (GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs.meta"),
+        "-in=images", "-on=predictor",
+        "-o=" + (GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs.graph")
+    ],
+    stdout=open(os.devnull, 'wb')); #Suppress output
 
 #Restores the model (graph and variables) from a supplied filepath
 def restore_model(id, sess):
@@ -580,6 +623,7 @@ def save_model_as_meta(id, sess):
 
     #Initialise if required
     sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
 
     #Saving operation
     saver = tf.train.Saver(max_to_keep=1)           #Keep only one copy

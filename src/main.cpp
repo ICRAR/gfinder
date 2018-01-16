@@ -46,7 +46,7 @@ const int INPUT_HEIGHT = 32;
 const int BATCH_SIZE = 16;
 
 //Whether or not to reun evaluation of CPU or NCS'
-const bool EVALUATE_ON_NCS = false;
+const bool EVALUATE_ON_NCS = true;
 
 
 //----------------------------------------------------------------------------//
@@ -865,8 +865,28 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
   //spacial coordinates using kakadu decompressor
   kdu_region_decompressor decompressor;
 
-  //For consistency between decompressions, set true scaling
-  //decompressor.set_true_scaling(true, false);
+  //If we're evaluating on the NCS's not the CPU, then the graph will
+  //need to be compiled for the NCS
+  if(EVALUATE_ON_NCS){
+    //Get filename
+    PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
+    PyErr_Print();
+
+    //Import file as module
+    PyObject* py_module = PyImport_Import(py_name);
+    PyErr_Print();
+
+    //Get function name from module
+    PyObject* py_func;
+    py_func = PyObject_GetAttrString(py_module,
+                                    (char*)"compile_for_ncs");
+    PyErr_Print();
+
+    //Call the compile function for the graph required
+    PyObject* py_result;
+    py_result = PyObject_CallObject(py_func, Py_BuildValue("(s)", graph_name));
+    PyErr_Print();
+  }
 
   for(int c = start_component_index; c <= final_component_index; c++){
     //For consistency
@@ -982,9 +1002,11 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
         //Get filename
         PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
         PyErr_Print();
+
         //Import file as module
         PyObject* py_module = PyImport_Import(py_name);
         PyErr_Print();
+
         //Get function name from module
         PyObject* py_func;
         if(EVALUATE_ON_NCS){
@@ -995,10 +1017,12 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
                                           (char*)"use_evaluation_unit_on_cpu");
         }
         PyErr_Print();
+
         //Call function with numpy aray
         PyObject* py_result;
         py_result = PyObject_CallObject(py_func, evaluation_unit);
         PyErr_Print();
+
         //Use the results to track successes
         double prediction = -1;
         if(py_result != NULL){
