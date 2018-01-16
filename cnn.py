@@ -536,10 +536,24 @@ def new_graph(id,             #Unique identifier for saving the graph
 def new_basic_graph(id):
     #Create a graph, if graph is any larger then network will
     #not be Movidius NCS compatible (reason unknown)
+    '''
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
               num_filters=[64, 64], #Number of filters in each Convolutional layer
               fc_sizes=[256, 128])          #Number of neurons in fully connected layer
+'''
+    images = tf.placeholder(tf.float32, shape=[None, 3, 3, 3, 3], name='input')
+    conv3d = tf.layers.conv3d(images, 4, [3, 3, 3])
+    flat, n = flatten_layer(conv3d)
+    #Create new weights and biases
+    weights = new_weights(shape=[n, 1], var_name='a')
+    biases = new_biases(length=1, var_name='a')
+
+    #Calculate the layer as the matrix multiplication of
+    #the input and weights, and then add the bias-values
+    out = tf.matmul(flat, weights) + biases
+    out = tf.identity(out, name='output')
+
 
     #Save it in a tensorflow session
     sess = tf.Session()
