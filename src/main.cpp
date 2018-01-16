@@ -48,7 +48,6 @@ const int BATCH_SIZE = 16;
 //Whether or not to reun evaluation of CPU or NCS'
 const bool EVALUATE_ON_NCS = true;
 
-
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //
 //----------------------------------------------------------------------------//
@@ -1220,12 +1219,11 @@ int main(int argc, char **argv){
   }
 
   //Print statistics
-  print_statistics(codestream);
+  //print_statistics(codestream);
 
   //TODO check resolution level is correct
 
   //Begin timing
-
 
   //Split on training/validation/evaluating
   if(isTrain || isValidate){

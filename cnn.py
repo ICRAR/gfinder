@@ -154,7 +154,6 @@ def use_evaluation_unit_on_cpu( np_array,
     #Convert to tensorflow/Movidius NCS compatible
     image_input = np.reshape(   make_compatible(np_array, True),
                                 (1, WIDTH, HEIGHT, 3))
-    print(image_input.shape)
 
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
@@ -166,12 +165,11 @@ def use_evaluation_unit_on_cpu( np_array,
     saver = restore_model(graph_name, sess)
 
     #Create a unitary feeder dictionary
-    feed_dict_eval = {'images:0': image_input, 'is_training': false}
+    feed_dict_eval = {'images:0': image_input, 'is_training:0': False}
 
     #Get the prediction
     pred = sess.run('predictor:0', feed_dict=feed_dict_eval)[0]
-    print(sess.run('conv_0:0', feed_dict=feed_dict_eval).shape)
-    print(sess.run('conv_0:0', feed_dict=feed_dict_eval))
+    print(sess.run('predictor:0', feed_dict=feed_dict_eval))
 
     #Close tensorflow session
     sess.close()
@@ -355,7 +353,7 @@ def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
     layer = tf.nn.relu(layer, name=('conv_' + conv_index))
 
     #Return the layer (and also the weights for inspection)
-    return layer, weights
+    return layer
 
 #Helper function for flattening a layer before it is fed to a fully connected layer
 def flatten_layer(layer):
@@ -443,19 +441,19 @@ def new_graph(id,             #Unique identifier for saving the graph
     #be optimised during graph execution. They also down-sample (pool) the image
     #after doing so. Filters are created in accordance with the arguments to this
     #function
-    layer_conv0, weights_conv0 = new_conv_layer(prev_layer=images,
-                                                num_input_channels=channels,
-                                                filter_size=filter_sizes[0],
-                                                num_filters=num_filters[0],
-                                                conv_index=0)
+    layer_conv0 = new_conv_layer(   prev_layer=images,
+                                    num_input_channels=channels,
+                                    filter_size=filter_sizes[0],
+                                    num_filters=num_filters[0],
+                                    conv_index=0)
     print("\t\t-Convolutional 0: " + str(layer_conv0))
 
     #layer 2 takes layer 1's output
-    layer_conv1, weights_conv1 = new_conv_layer(prev_layer=layer_conv0,
-                                                num_input_channels=num_filters[0],
-                                                filter_size=filter_sizes[1],
-                                                num_filters=num_filters[1],
-                                                conv_index=1)
+    layer_conv1 = new_conv_layer(   prev_layer=layer_conv0,
+                                    num_input_channels=num_filters[0],
+                                    filter_size=filter_sizes[1],
+                                    num_filters=num_filters[1],
+                                    conv_index=1)
     print("\t\t-Convolutional 1: " + str(layer_conv1))
 
     #Fully connected layers only take 2D tensors so above output must be
@@ -525,7 +523,6 @@ def new_graph(id,             #Unique identifier for saving the graph
         #OPTIMISATION FUNCTION
         #Optimisation function to Optimise cross entropy will be Adam optimizer
         #(advanced gradient descent)
-
         #Require the following extra ops due to batch normalisation
         extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(extra_update_ops):
@@ -541,8 +538,8 @@ def new_basic_training_graph(id):
     #not be Movidius NCS compatible (reason unknown)
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
-              num_filters=[64, 64], #Number of filters in each Convolutional layer
-              fc_sizes=[256, 128],  #Number of neurons in fully connected layer
+              num_filters=[8, 8], #Number of filters in each Convolutional layer
+              fc_sizes=[32, 16],  #Number of neurons in fully connected layer
               for_training=True)
 
     #Save it in a tensorflow session
@@ -557,8 +554,8 @@ def compile_for_ncs(id):
     #not be Movidius NCS compatible (reason unknown)
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
-              num_filters=[64, 64], #Number of filters in each Convolutional layer
-              fc_sizes=[256, 128],  #Number of neurons in fully connected layer
+              num_filters=[8, 8], #Number of filters in each Convolutional layer
+              fc_sizes=[32, 16],  #Number of neurons in fully connected layer
               for_training=False)
 
     #Prepare to save all this stuff
@@ -581,11 +578,15 @@ def compile_for_ncs(id):
     sess.close()
 
     #Compile graph with subprocess for NCS
-    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-compiled'
+    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-for-ncs.graph'
     subprocess.call([
-        'mvNCCompile', (GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs.meta"),
-        "-in=images", "-on=predictor",
-        "-o=" + (GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs.graph")
+        'mvNCCompile',
+        (GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs.meta"),
+        "-in=images",
+        "-on=predictor",
+        "-s=12",
+        "-o=" + GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs.graph",
+        "-is", str(WIDTH), str(HEIGHT)
     ],
     stdout=open(os.devnull, 'wb')); #Suppress output
 
