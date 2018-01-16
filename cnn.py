@@ -124,7 +124,9 @@ def use_supervised_batch(   image_data_batch,
         label_input.append([label_batch[i]])
 
     #Create a unitary feeder dictionary
-    feed_dict = {'images:0': image_input, 'labels:0': label_input}
+    feed_dict = {   'images:0': image_input,
+                    'labels:0': label_input,
+                    'is_training:0': update_model}
 
     #Only optimise & save the graph if in training mode
     if optimise_and_save == 1:
@@ -150,8 +152,9 @@ def use_evaluation_unit_on_cpu( np_array,
                                 graph_name):
 
     #Convert to tensorflow/Movidius NCS compatible
-    image_input = []
-    image_input.append(make_compatible(np_array, True))
+    image_input = np.reshape(   make_compatible(np_array, True),
+                                (1, WIDTH, HEIGHT, 3))
+    print(image_input.shape)
 
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
@@ -167,8 +170,8 @@ def use_evaluation_unit_on_cpu( np_array,
 
     #Get the prediction
     pred = sess.run('predictor:0', feed_dict=feed_dict_eval)[0]
-    #print(sess.run('conv_0:0', feed_dict=feed_dict_eval).shape)
-    #print(sess.run('conv_0:0', feed_dict=feed_dict_eval))
+    print(sess.run('conv_0:0', feed_dict=feed_dict_eval).shape)
+    print(sess.run('conv_0:0', feed_dict=feed_dict_eval))
 
     #Close tensorflow session
     sess.close()
@@ -188,7 +191,7 @@ def use_evaluation_unit_on_ncs( np_array,
     #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-compiled'
     subprocess.call([
         'mvNCCompile', (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + ".meta"),
-        "-in=images", "-on=conv_0",
+        "-in=images", "-on=predictor",
         "-o=" + (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-compiled")
     ],
     stdout=open(os.devnull, 'wb')); #Suppress output
@@ -218,13 +221,14 @@ def use_evaluation_unit_on_ncs( np_array,
             #print("Allocating compiled graph onto device")
             graph_ref = device.AllocateGraph(graph_file)
 
-            #Convert to tensorflow/Movidius NCS compatible
-            image_input = []
-            image_input.append(make_compatible(np_array, True))
+            #Image input must conform to input placeholder dimensions
+            image_input = np.reshape(   make_compatible(np_array, True),
+                                        (1, WIDTH, HEIGHT, 3))
+            print(image_input.shape)
 
             #Track the prediction
             pred = None
-            if graph_ref.LoadTensor(make_compatible(np_array, True), "images"):
+            if graph_ref.LoadTensor(image_input, "images"):
                 #Get output of graph
                 output, userobj = graph_ref.GetResult()
 
@@ -282,7 +286,7 @@ def plot_conv_weights(graph_name, layer_name):
     #Number of filters used in the conv. layer. Should be 48
     num_filters = w.shape[3]
 
-    #Create figure with a grid of sub-plots (4x12)
+    #Create figure with a grid of sub-plots (4xY)
     fig, axes = plt.subplots(4, math.ceil(num_filters/4))
 
     #Plot all the filter-weights.
@@ -330,7 +334,7 @@ def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
     conv_index = str(conv_index)
 
     #Create filters with a given shape to be optimised over graph execution
-    #rank must be 4 for tensorflow
+    #rank must be 4 for tensorflow conv2d
     weights = new_weights(  shape=[filter_size, filter_size, num_input_channels, num_filters],
                             var_name=("conv_weights_" + conv_index))
 
@@ -402,8 +406,10 @@ def new_fc_layer(prev_layer,         #the previous layer (input to this layer)
 
     #Apply activation function if requested
     if not final_fc_layer:
+        #Apply ReLU
         layer = tf.nn.relu(layer, name='fc_' + fc_index)
     else:
+        #No ReLU, just name
         layer = tf.identity(layer, name='fc_' + fc_index)
 
     return layer
@@ -427,12 +433,11 @@ def new_graph(id,             #Unique identifier for saving the graph
     #(must be float32 for convolution and must be 4D for tensorflow)
     images = tf.placeholder(tf.float32, shape=[None, WIDTH, HEIGHT, channels], name='images')
     print("\t\t-Placeholder '" + images.name + "': " + str(images))
-    #images_4d = tf.reshape(images, shape=[-1, WIDTH, HEIGHT, 3], name='images_to_4d')
-    #print("\t\t-Images reshaper '" + images_4d.name + "': " + str(images_4d))
-
     #and supervisory signals which are boolean (is or is not a galaxy)
     labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
     print("\t\t-Placeholder '" + labels.name + "': " + str(labels))
+    #Whether or not we are training (for batch normalisation)
+    is_training = tf.placeholder(tf.bool, name='is_training')
 
     #CONVOLUTIONAL LAYERS
     #These convolutional layers sequentially take inputs and create/apply filters
@@ -472,14 +477,20 @@ def new_graph(id,             #Unique identifier for saving the graph
                              fc_index=0)
     print("\t\t-Fully connected 0: " + str(layer_fc0))
 
-    layer_fc1 = new_fc_layer(prev_layer=layer_fc0,
+    #Apply batch normalisation after ReLU
+    layer_bn0 = tf.layers.batch_normalization(layer_fc0, training=is_training)
+
+    layer_fc1 = new_fc_layer(prev_layer=layer_bn0,
                              num_inputs=fc_sizes[0],
                              num_outputs=fc_sizes[1],
                              final_fc_layer=False,
                              fc_index=1)
     print("\t\t-Fully connected 1: " + str(layer_fc1))
 
-    layer_fc2 = new_fc_layer(prev_layer=layer_fc1,
+    #Apply batch normalisation after ReLU
+    layer_bn1 = tf.layers.batch_normalization(layer_fc1, training=is_training)
+
+    layer_fc2 = new_fc_layer(prev_layer=layer_bn1,
                              num_inputs=fc_sizes[1],
                              num_outputs=1,
                              final_fc_layer=True,
@@ -512,8 +523,13 @@ def new_graph(id,             #Unique identifier for saving the graph
     #OPTIMISATION FUNCTION
     #Optimisation function to Optimise cross entropy will be Adam optimizer
     #(advanced gradient descent)
-    alpha = 1e-4    #Learning rate
-    optimiser = tf.train.AdamOptimizer(learning_rate=alpha).minimize(cost)
+
+    #Require the following extra ops due to batch normalisation
+    extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+    with tf.control_dependencies(extra_update_ops):
+        alpha = 1e-3    #Learning rate
+        optimiser = tf.train.AdamOptimizer(learning_rate=alpha).minimize(cost)
+
     print("\t\t-Optimiser: alpha=" + str(alpha) + ", " + str(optimiser.name))
 
 #Wraps the above to make a very basic convolutional neural network
