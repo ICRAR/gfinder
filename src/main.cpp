@@ -43,10 +43,10 @@ const int INPUT_WIDTH = 32;
 const int INPUT_HEIGHT = 32;
 
 //Number of images to feed per batch (minibatch)
-const int BATCH_SIZE = 64;
+const int BATCH_SIZE = 96;
 
 //Whether or not to reun evaluation of CPU or NCS'
-const bool EVALUATE_ON_NCS = false;
+const bool EVALUATE_ON_NCS = true;
 
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //
