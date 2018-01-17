@@ -87,26 +87,6 @@ struct label{
 };
 
 //----------------------------------------------------------------------------//
-// Internal classes (for externing to C and then making available in python)  //
-//----------------------------------------------------------------------------//
-
-//Manages the getting of labelled data from jpx files with encoded metadata
-class jpx_handler{
-  public:
-    bool load_file(){
-      cout << "Loading file\n";
-      return true;
-    }
-};
-
-//Python's ctypes can only interact with C functions, so declare the above
-//as C functions here
-extern "C" {
-  jpx_handler* jpx_handler_new(){ return new jpx_handler(); }
-  bool jpx_handler_load_file(jpx_handler* jpx_handler){ jpx_handler->load_file(); }
-}
-
-//----------------------------------------------------------------------------//
 // Internal functions                                                         //
 //----------------------------------------------------------------------------//
 

@@ -16,23 +16,8 @@ import matplotlib.pyplot as plt     #For visualisation
 import math                         #For logs
 import time                         #For debugging with catchup
 import subprocess                   #For compiling graphs
-from ctypes import cdll           #For calling C++ functions
 import tensorflow as tf             #For deep learning
 from mvnc import mvncapi as mvnc    #For Movidius NCS API
-
-#Shared library made from C++ and KDU code is loaded
-jpx_lib = cdll.LoadLibrary('./jpx.so')
-
-#Wrapper for jpx shared library
-class jpx_handler(object):
-    def __init__(self):
-        self.obj = jpx_lib.jpx_handler_new()
-
-    def load_file(self):
-        jpx_lib.jpx_handler_load_file(self.obj)
-
-handler = jpx_handler()
-handler.load_file()
 
 #Set suppressed logging level for Movidius NCS API
 mvnc.SetGlobalOption(mvnc.GlobalOption.LOG_LEVEL, 1)
