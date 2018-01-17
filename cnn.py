@@ -537,7 +537,7 @@ def new_graph(id,             #Unique identifier for saving the graph
         global_step = tf.Variable(0, trainable=False)   #Incremented per batch
         init_alpha = 0.1    #Ideally want to go down to 1e-4
         decay_base = 0.95   #alpha = alpha*decay_base^(global_step/decay_steps)
-        decay_steps = 250   #With data set of 300000, this should get us to 0.0001
+        decay_steps = 64    #With data set of 300000, this should get us to 0.0001
         alpha = tf.train.exponential_decay( init_alpha,
                                             global_step, decay_steps, decay_base,
                                             name='alpha')
