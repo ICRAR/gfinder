@@ -46,7 +46,7 @@ const int INPUT_HEIGHT = 32;
 const int BATCH_SIZE = 16;
 
 //Whether or not to reun evaluation of CPU or NCS'
-const bool EVALUATE_ON_NCS = true;
+const bool EVALUATE_ON_NCS = false;
 
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //

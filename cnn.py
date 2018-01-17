@@ -276,7 +276,7 @@ def plot_conv_weights(graph_name, layer_name):
     w_min = np.min(w)
     w_max = np.max(w)
 
-    #Number of filters used in the conv. layer. Should be 48
+    #Number of filters used in the conv. layer
     num_filters = w.shape[3]
 
     #Create figure with a grid of sub-plots (4xY)
@@ -288,7 +288,7 @@ def plot_conv_weights(graph_name, layer_name):
         if i < num_filters:
             #See new_conv_layer() for details on the format
             #of this 4-dim tensor
-            img = w[:, :, 0, i]
+            img = w[:, :, 0, i] #Get first depth
 
             #Plot image
             ax.imshow(img, vmin=w_min, vmax=w_max,
@@ -309,12 +309,12 @@ def plot_conv_weights(graph_name, layer_name):
 #Helper function for creating filters as a tensorflow variable within each layer
 def new_weights(shape, var_name):
     #Weights start as noise and are eventually learned
-    return tf.Variable(tf.truncated_normal(shape, stddev=0.05), name=var_name)
+    return tf.Variable(tf.truncated_normal(shape, stddev=0.001), name=var_name)
 
 #Helper function for creating biases as a tensorflow variable within each layer
 def new_biases(length, var_name):
     #Biases start as noise and are eventually learned
-    return tf.Variable(tf.constant(0.05, shape=[length]), name=var_name)
+    return tf.Variable(tf.constant(0.001, shape=[length]), name=var_name)
 
 #Helper function for creating a new convolution layer in a graph
 def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
@@ -535,11 +535,11 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Optimisation function will have a decaying learning rate for bolder retuning
         #at the beginning of the trainig run
         global_step = tf.Variable(0, trainable=False)   #Incremented per batch
-        init_alpha = 0.5    #Ideally want to go over range 0.5->0.0001
+        init_alpha = 0.1    #Ideally want to go down to 1e-4
         decay_base = 0.95   #alpha = alpha*decay_base^(global_step/decay_steps)
-        decay_steps = 250   #With data set 300000, this should get us to 0.0001
+        decay_steps = 250   #With data set of 300000, this should get us to 0.0001
         alpha = tf.train.exponential_decay( init_alpha,
-                                            global_step, 100, 0.95,
+                                            global_step, decay_steps, decay_base,
                                             name='alpha')
 
         print("\t\t-Learning rate: " + str(alpha))
@@ -549,7 +549,6 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Require the following extra ops due to batch normalisation
         extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(extra_update_ops):
-            alpha = 5e-4    #Learning rate
             optimiser = (
                 tf.train.AdamOptimizer(learning_rate=alpha)
                 .minimize(cost, global_step=global_step)    #Decay learning rate
@@ -566,8 +565,8 @@ def new_basic_training_graph(id):
     #not be Movidius NCS compatible (reason unknown)
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
-              num_filters=[8, 8], #Number of filters in each Convolutional layer
-              fc_sizes=[32, 16],  #Number of neurons in fully connected layer
+              num_filters=[32, 32], #Number of filters in each Convolutional layer
+              fc_sizes=[128, 48],    #Number of neurons in fully connected layer
               for_training=True)
 
     #Save it in a tensorflow session
@@ -582,9 +581,10 @@ def compile_for_ncs(id):
     #not be Movidius NCS compatible (reason unknown)
     new_graph(id,      #Id/name
               filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
-              num_filters=[8, 8], #Number of filters in each Convolutional layer
-              fc_sizes=[32, 16],  #Number of neurons in fully connected layer
-              for_training=False)
+              num_filters=[32, 32], #Number of filters in each Convolutional layer
+              fc_sizes=[128, 48],    #Number of neurons in fully connected layer
+              for_training=False)   #Gets rid of placeholders and training structures
+                                    #that aren't needed for NCS
 
     #Prepare to save all this stuff
     saver = tf.train.Saver(tf.global_variables())
