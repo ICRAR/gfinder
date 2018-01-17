@@ -138,6 +138,9 @@ def use_supervised_batch(   image_data_batch,
 
     #Prints current loss
     print("\t-loss (mean sigmoid cross entropy of batch) = " + str(sess.run('loss:0', feed_dict=feed_dict)))
+    #Prints current learning rate
+    print("\t-alpha = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
+
     #What is the prediction for each image? (as bool)
     preds = [x[0] > 0.5 for x in sess.run('predictor:0', feed_dict=feed_dict)]
 
@@ -448,6 +451,10 @@ def new_graph(id,             #Unique identifier for saving the graph
                                     conv_index=0)
     print("\t\t-Convolutional 0: " + str(layer_conv0))
 
+    if for_training:
+        #Apply batch normalisation after ReLU
+        layer_conv0 = tf.layers.batch_normalization(layer_conv0, training=is_training)
+
     #layer 2 takes layer 1's output
     layer_conv1 = new_conv_layer(   prev_layer=layer_conv0,
                                     num_input_channels=num_filters[0],
@@ -455,6 +462,10 @@ def new_graph(id,             #Unique identifier for saving the graph
                                     num_filters=num_filters[1],
                                     conv_index=1)
     print("\t\t-Convolutional 1: " + str(layer_conv1))
+
+    if for_training:
+        #Apply batch normalisation after ReLU
+        layer_conv1 = tf.layers.batch_normalization(layer_conv1, training=is_training)
 
     #Fully connected layers only take 2D tensors so above output must be
     #flattened from 4d
@@ -518,18 +529,35 @@ def new_graph(id,             #Unique identifier for saving the graph
                                                                 name='sigmoid_cross_entropy')
         print("\t\t-Cross entropy: " + str(cross_entropy))
         cost = tf.reduce_mean(cross_entropy, name='loss')
-        print("\t\t-Loss: " + str(cost))
+        print("\t\t-Loss (reduced mean cross entropy): " + str(cost))
 
         #OPTIMISATION FUNCTION
+        #Optimisation function will have a decaying learning rate for bolder retuning
+        #at the beginning of the trainig run
+        global_step = tf.Variable(0, trainable=False)   #Incremented per batch
+        init_alpha = 0.5    #Ideally want to go over range 0.5->0.0001
+        decay_base = 0.95   #alpha = alpha*decay_base^(global_step/decay_steps)
+        decay_steps = 250   #With data set 300000, this should get us to 0.0001
+        alpha = tf.train.exponential_decay( init_alpha,
+                                            global_step, 100, 0.95,
+                                            name='alpha')
+
+        print("\t\t-Learning rate: " + str(alpha))
+
         #Optimisation function to Optimise cross entropy will be Adam optimizer
         #(advanced gradient descent)
         #Require the following extra ops due to batch normalisation
         extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(extra_update_ops):
             alpha = 5e-4    #Learning rate
-            optimiser = tf.train.AdamOptimizer(learning_rate=alpha).minimize(cost)
+            optimiser = (
+                tf.train.AdamOptimizer(learning_rate=alpha)
+                .minimize(cost, global_step=global_step)    #Decay learning rate
+                                                            #by incrementing global step
+                                                            #once per batch
+            )
 
-        print("\t\t-Optimiser: alpha=" + str(alpha) + ", " + str(optimiser.name))
+        print("\t\t-Optimiser: " + str(optimiser.name))
 
 #Wraps the above to make a basic convolutional neural network for binary
 #image classification
