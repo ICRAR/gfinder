@@ -1,8 +1,8 @@
 //Compile with makefile provided
 
-//For example:  ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,899
-//              ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 900,993
-//              ./gfinder -f /mnt/shared-storage/dingo.00000.with_catalogue.jpx -g test-graph -e 165,1640,35,40 -r 0 -c 994,994
+//For example:  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,899
+//              ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -v -r 0 -c 900,993
+//              ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -e 165,1640,35,40 -r 0 -c 994,994
 
 //C++ standard includes
 #include <iostream>     //For cout
@@ -85,6 +85,26 @@ struct label{
 
   bool isGalaxy;  //Does this label represent a galaxy
 };
+
+//----------------------------------------------------------------------------//
+// Internal classes (for externing to C and then making available in python)  //
+//----------------------------------------------------------------------------//
+
+//Manages the getting of labelled data from jpx files with encoded metadata
+class jpx_handler{
+  public:
+    bool load_file(){
+      cout << "Loading file\n";
+      return true;
+    }
+};
+
+//Python's ctypes can only interact with C functions, so declare the above
+//as C functions here
+extern "C" {
+  jpx_handler* jpx_handler_new(){ return new jpx_handler(); }
+  bool jpx_handler_load_file(jpx_handler* jpx_handler){ jpx_handler->load_file(); }
+}
 
 //----------------------------------------------------------------------------//
 // Internal functions                                                         //

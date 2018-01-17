@@ -16,8 +16,23 @@ import matplotlib.pyplot as plt     #For visualisation
 import math                         #For logs
 import time                         #For debugging with catchup
 import subprocess                   #For compiling graphs
+from ctypes import cdll           #For calling C++ functions
 import tensorflow as tf             #For deep learning
 from mvnc import mvncapi as mvnc    #For Movidius NCS API
+
+#Shared library made from C++ and KDU code is loaded
+jpx_lib = cdll.LoadLibrary('./jpx.so')
+
+#Wrapper for jpx shared library
+class jpx_handler(object):
+    def __init__(self):
+        self.obj = jpx_lib.jpx_handler_new()
+
+    def load_file(self):
+        jpx_lib.jpx_handler_load_file(self.obj)
+
+handler = jpx_handler()
+handler.load_file()
 
 #Set suppressed logging level for Movidius NCS API
 mvnc.SetGlobalOption(mvnc.GlobalOption.LOG_LEVEL, 1)
@@ -119,6 +134,12 @@ def use_supervised_batch(   image_data_batch,
     for i in range(0, batch_size):
         #Transform to tensorflow/Movidius NCS compatible and add to list of input
         image_input.append(make_compatible(image_data_batch[i], False))
+        name = str(i)
+        if label_batch[i] == 1:
+            name += "-G"
+        elif label_batch[i] == 0:
+            name += "-N"
+        save_array_as_fig(np.uint8(np.reshape(image_data_batch[i], (WIDTH, HEIGHT))), name);
 
         #Convert label input into array of scalar arrays
         label_input.append([label_batch[i]])

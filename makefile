@@ -63,7 +63,7 @@ all: $(OBJ_DIR)/$(OBJS)
 
 #Rule for compiling each .cpp seperately
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
-	$(CXX) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CFLAGS) $(INCLUDES) -c -fPIC $< -o $@
 
 #For make clean, remove all files in object folder and remove binary
 .PHONY: clean
