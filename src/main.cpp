@@ -15,6 +15,14 @@
 #include <vector>       //For vectors
 #include <unistd.h>     //For getopt
 
+//IPC/networking & process management includes
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
 //KDU includes
 #include "jpx.h"
 #include "kdu_messaging.h"
@@ -436,374 +444,223 @@ void end_embedded_python(){
   Py_Finalize();
 }
 
-//Converts a series of kdu_uint32 arrays and labels into a supervised batch that
-//can be fed into python
-PyObject *get_supervised_batch( vector<kdu_uint32*> image_data_batch,
-                                vector<bool> label_batch,
-                                char *graph_name,
-                                bool update_model)
-{
-  //A supervised batch is a list of 1D image data arrays, a list of labels, and
-  //a graph name
-
-  //Create a list of 1D image data arrays as a Python list
-  PyObject* image_data_batch_py = PyList_New(image_data_batch.size());
-  npy_intp len = INPUT_WIDTH*INPUT_HEIGHT;  //Length of one 1D array
-
-  //Create a list of booleans as a Python list
-  PyObject* label_batch_py = PyList_New(label_batch.size());
-
-  for(int i = 0; i < image_data_batch.size(); i++){
-    //Set the value for the image data
-    PyList_SetItem(image_data_batch_py, i, Py_BuildValue("O",
-      PyArray_SimpleNewFromData(
-        1,
-        &len,
-        NPY_UINT32,
-        (void *)image_data_batch[i]
-      ))
-    );
-
-    //Sets the value for the boolean (which is passed as a int)
-    PyList_SetItem(label_batch_py, i,
-      Py_BuildValue("i", (label_batch[i] ? 1 : 0))
-    );
-  }
-
-  //Create as a batch that will be passed to the python program
-  PyObject* supervised_batch = Py_BuildValue("(O, O, s, i)",
-    image_data_batch_py,
-    label_batch_py,
-    graph_name,
-    (update_model ? 1 : 0)
-  );
-
-  return supervised_batch;
-}
-
-//Pretty prints the results of a batch into a table
-void print_results_table( int t_pos, int f_pos, int t_neg, int f_neg,
-                          int correct, int incorrect,
-                          int digits)
-{
-  //Field names are read as: was (T = correct/F = incorrect)
-  //because prediction was (+ = gal/ - = noise)
-  cout << "\t\t+";
-  cout << std::setfill('-') << std::setw(14) << "+";
-  for(int i = 0; i < 3; i++){
-      cout << std::setfill('-') << std::setw(9) << "+";
-  }
-  cout << "\n";
-
-  cout << "\t\t| MARK | PRED | "
-    << std::setfill(' ') << std::setw(digits) << std::left << "GALAXY" << " | "
-    << std::setfill(' ') << std::setw(digits) << std::left << "NOISE" << " | "
-    << std::setfill(' ') << std::setw(digits) << std::left << "TOTALS" << " |\n";
-  cout << std::resetiosflags(std::ios::adjustfield);
-
-  cout << "\t\t+";
-  cout << std::setfill('-') << std::setw(14) << "+";
-  for(int i = 0; i < 3; i++){
-      cout << std::setfill('-') << std::setw(9) << "+";
-  }
-  cout << "\n";
-
-  std::ostringstream c_oss;
-  c_oss << " +" << correct << " (CORRECT)";
-  cout << "\t\t|     CORRECT | "
-    << std::setfill(' ') << std::setw(digits) << std::left << t_pos << " | "
-    << std::setfill(' ') << std::setw(digits) << std::left << t_neg << " | "
-    << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg << " | "
-    << std::setfill(' ') << std::setw(17) << std::left << c_oss.str();
-  cout << std::resetiosflags(std::ios::adjustfield) << "| \n";
-
-  cout << "\t\t+";
-  cout << std::setfill('-') << std::setw(14) << "+";
-  for(int i = 0; i < 3; i++){
-      cout << std::setfill('-') << std::setw(9) << "+";
-  }
-  cout << std::setfill(' ') << std::setw(18) << std::right << " " << "|-->"
-    << " BATCH ACCURACY: "
-    << 100*(double)(correct)/(double)(incorrect + correct) << "%\n";
-
-  std::ostringstream inc_oss;
-  inc_oss << " +" << incorrect << " (INCORRECT)";
-  cout << "\t\t|   INCORRECT | "
-    << std::setfill(' ') << std::setw(digits) << std::left << f_pos << " | "
-    << std::setfill(' ') << std::setw(digits) << std::left << f_neg << " | "
-    << std::setfill(' ') << std::setw(digits) << std::left << f_pos + f_neg << " | "
-    << std::setfill(' ') << std::setw(17) << std::left << inc_oss.str();
-  cout << std::resetiosflags(std::ios::adjustfield) << "| \n";
-
-  cout << "\t\t+";
-  cout << std::setfill('-') << std::setw(14) << "+";
-  for(int i = 0; i < 3; i++){
-      cout << std::setfill('-') << std::setw(9) << "+";
-  }
-  cout << "\n";
-
-  cout << "\t\t|      TOTALS | "
-    << std::setfill(' ') << std::setw(digits) << std::left << t_pos + f_pos << " | "  //Galaxy guesses
-    << std::setfill(' ') << std::setw(digits) << std::left << f_neg + t_neg << " | "  //Noise guesses
-    << std::setfill(' ') << std::setw(digits) << std::left << t_pos + t_neg + f_pos + f_neg << " | "
-    << " SESSION ACCURACY: " << 100*(double)(t_pos + t_neg)/(double)(t_pos + t_neg + f_pos + f_neg) << "%"
-    << " NOISE ID RATE: " << (f_pos + t_neg == 0 ? 100 : 100*(double)(t_neg)/(double)(t_neg + f_pos)) << "%"
-    << " GALAXY ID RATE: " << (t_pos + f_neg == 0 ? 100 : 100*(double)(t_pos)/(double)(t_pos + f_neg)) << "%"
-    << "\n";
-  cout << std::resetiosflags(std::ios::adjustfield);
-
-  cout << "\t\t+";
-  cout << std::setfill('-') << std::setw(14) << "+";
-  for(int i = 0; i < 3; i++){
-      cout << std::setfill('-') << std::setw(9) << "+";
-  }
-  cout << "\n";
-}
-
-//Trains the nueral net on an image batch and label batch and returns the results
-//to the terminal
-void feed_batch_and_print_results(vector<kdu_uint32*> image_data_batch,
-                                  vector<bool> label_batch,
-                                  int & t_pos, int & f_pos, int & t_neg, int & f_neg,
-                                  int units_expected, bool updateModel,
-                                  int digits, char *graph_name)
-{
-  //Call the function in python to load the training unit as a tensor
-  //Get filename
-  PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
-  PyErr_Print();
-
-  //Import file as module
-  PyObject* py_module = PyImport_Import(py_name);
-  PyErr_Print();
-
-  //Get function name from module depending on if validating or training
-  PyObject* py_func;
-  py_func = PyObject_GetAttrString(py_module, (char*)"use_supervised_batch");
-  PyErr_Print();
-
-  //Call function with batch data
-  PyObject* py_result;
-  py_result = PyObject_CallObject(py_func,
-    get_supervised_batch(image_data_batch, label_batch, graph_name, updateModel)
-  );
-  PyErr_Print();
-
-  //Use the prediction results to track successes and failures
-  vector<int> preds;
-  int correct = 0;
-  int incorrect = 0;
-  for(int i = 0; i < image_data_batch.size(); i++){
-    if(py_result != NULL){
-      //PyObject_IsTrue returns 1 if py_result is true and 0 if it is false
-      preds.push_back(PyObject_IsTrue(PyList_GetItem(py_result, i)));
-    }else{
-      cout << "Error: embedded python3 training function returning incorrectly\n";
-    }
-
-    //Track true/false positives/negatives
-    if(preds[i] == 1){
-      //Predicton was a galaxy (pos)
-      if(label_batch[i]){
-        //Was a galaxy (T)
-        t_pos++;
-        correct++;
-      }else{
-        //Was noise (F)
-        f_pos++;
-        incorrect++;
-      }
-    }else{
-      //Predicton was noise (neg)
-      if(label_batch[i]){
-        //Was a galaxy (F)
-        f_neg++;
-        incorrect++;
-      }else{
-        //Was noise (T)
-        t_neg++;
-        correct++;
-      }
-    }
-  }
-
-  //Announce and track the number of training units fed
-  cout << "\t-" << t_pos + f_pos + t_neg + f_neg << "/" << units_expected
-    << ((updateModel) ? " training units " : " validation units ") << "fed to network:\n";
-  print_results_table(t_pos, f_pos, t_neg, f_neg, correct, incorrect, digits);
-}
-
 //Called when training a graph is specified. Note a reference to the jpx source
 //is taken - this prevents segmentation fault (same with codestream)
 void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
             kdu_thread_env & env,
             int start_component_index, int final_component_index,
-            int resolution_level, bool updateModel)
+            int resolution_level, bool update_model, int port_no)
 {
 
-  //Training data is currently a block of positives followed by a block of
-  //negatives. It should be random
-  std::random_shuffle(labels.begin(), labels.end());
+  //Set up a sockets
+  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if(sockfd < 0){
+    cout << "Error: couldn't establish socket for server in C++ process\n";
+    return;
+  }
 
-  //Track the number of training units fed thus far and the number expected to be fed
-  int units_expected = labels.size();
-  int digits = units_expected > 0 ? (int) log10 ((double) units_expected) + 1 : 1;
-  digits = (digits < 6) ? 6 : digits; //To hold the word 'galaxy'
+  //Set up server using socket
+  struct sockaddr_in server_addr;
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = htons(INADDR_ANY);
+  server_addr.sin_port = htons(port_no);
 
-  //More detailed tracking (false/true negatives/positives
-  //where positive is galaxy and negative is noise)
-  int f_pos = 0;
-  int f_neg = 0;
-  int t_pos = 0;
-  int t_neg = 0;
+  //Bind server to socket
+  if((bind(sockfd, (struct sockaddr*)&server_addr,sizeof(server_addr))) < 0){
+    cout << "Error: couldn't bind connection to already established socket\n";
+    return;
+  }
 
-  //Operate in batches (only recalc weights after batch change)
-  vector<kdu_uint32*> image_data_batch;
-  vector<bool> label_batch;
+  //Fork the python training program (loads up the graph)
+  int status;
+  pid_t pid = fork();
+  if(pid == 0){
+    //Child, create the python training process here (requires graph name)
+    //Get filename
+    PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
+    PyErr_Print();
 
-  //Decompress areas given by labels with a given tolerance (labels mark only the
-  //frequency point at which the galaxy is strongest, but typically they are still
-  //in previous and further frequency frames)
-  for(int l = 0; l < labels.size(); l++){
-    //Construct a region from the label data
-    kdu_dims region;
-    region.access_pos()->set_x(labels[l].tlx);
-    region.access_size()->set_x(labels[l].brx - labels[l].tlx);
-    region.access_pos()->set_y(labels[l].tly);
-    region.access_size()->set_y(labels[l].bry - labels[l].tly);
+    //Import file as module
+    PyObject* py_module = PyImport_Import(py_name);
+    PyErr_Print();
 
-    //Decompress over labeled frames at the correct
-    //spacial coordinates using kakadu decompressor
-    kdu_region_decompressor decompressor;
+    //Get function name from module depending on if validating or training
+    PyObject* py_func;
+    py_func = PyObject_GetAttrString(py_module, (char*)"run_training_client");
+    PyErr_Print();
 
-    int component_index = labels[l].f;
+    //Call function with the graph to train on and the port to listen for
+    //training data on
+    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i)",
+      graph_name,
+      port_no,
+      (update_model ? 1 : 0),  //Whether or not to update graph
+      BATCH_SIZE,
+      labels.size()
+    ));
+    PyErr_Print();
 
-    //TODO: variable
-    int discard_levels = 0;
+    //Child process now finished, destroy
+    exit(EXIT_SUCCESS);
 
-    //Get safe expansion factors for the decompressor
-    //Safe upper bounds & minmum product returned into the following variables
-    double min_prod;
-    double max_x;
-    double max_y;
-    decompressor.get_safe_expansion_factors(
-      codestream, //The codestream being decompressed
-      NULL,  //Codestream's channel mapping (null because specifying index)
-      component_index,    //Check over all components
-      discard_levels,     //DWT levels to discard (resolution reduction)
-      min_prod,
-      max_x,
-      max_y
-    );
-
-    kdu_dims component_dims;  //Holds expanded component coordinates (post discard)
-    kdu_dims incomplete_region;  //Holds the region that is incomplete after processing run
-    kdu_dims new_region;  //Holds the region that is rendered after a processing run
-
-    //Get the expansion factors for expansion TODO: non 1x expansion
-    kdu_coords scale_num;
-    scale_num.set_x(1); scale_num.set_y(1);
-    kdu_coords scale_den;
-    scale_den.set_x(1); scale_den.set_y(1);
-
-    //Get the size of the complete component (after discard levels decrease
-    //in resolution is applied) on the rendering canvas
-    component_dims = decompressor.get_rendered_image_dims(
-      codestream, //The codestream being decompressed
-      NULL,       //Codestream's channel mapping (null because specifying index)
-      component_index,  //Component being decompressed
-      discard_levels,   //DWT levels to discard (resolution reduction)
-      scale_num,
-      scale_den
-    );
-
-    //Should a region not fully be included in the image then skip to the next label
-    if( region.pos.x < component_dims.pos.x ||
-        region.pos.x + region.size.x > component_dims.pos.x + component_dims.size.x ||
-        region.pos.y < component_dims.pos.y ||
-        region.pos.y + region.size.y > component_dims.pos.y + component_dims.size.y){
-          continue;
+  }else if (pid > 0){
+    //Parent, wait for 1 python client to connect here
+    listen(sockfd, 1);
+    socklen_t size = sizeof(server_addr);
+    int server = accept(sockfd, (struct sockaddr *)&server_addr, &size);
+    if(server < 0){
+      cout << "Error: couldn't accept client connection\n";
+    }else{
+      cout << "Training client successfully connected, begin streaming decompressed data\n";
     }
 
-    //Will hold data of decompressed region
-    image_data_batch.push_back(NULL);
+    //Training data is currently a block of positives followed by a block of
+    //negatives. It should be random
+    std::random_shuffle(labels.begin(), labels.end());
 
-    //For managing and allocating decompressor image buffers
-    image_data_batch[image_data_batch.size() - 1] = new kdu_uint32[(size_t) region.area()];
+    //Track the number of training units fed thus far and the number expected to be fed
+    int units_expected = labels.size();
 
-    //Loop decompression to ensure that amount of DWT discard levels doesn't
-    //exceed tile with minimum DWT levels
-    do{
-      //Set up decompressing run
-      //cout << "Starting decompression\n";
-      decompressor.start(
+    //Decompress areas given by labels with a given tolerance (labels mark only the
+    //frequency point at which the galaxy is strongest, but typically they are still
+    //in previous and further frequency frames)
+    for(int l = 0; l < labels.size(); l++){
+      //Construct a region from the label data
+      kdu_dims region;
+      region.access_pos()->set_x(labels[l].tlx);
+      region.access_size()->set_x(labels[l].brx - labels[l].tlx);
+      region.access_pos()->set_y(labels[l].tly);
+      region.access_size()->set_y(labels[l].bry - labels[l].tly);
+
+      //Decompress over labeled frames at the correct
+      //spacial coordinates using kakadu decompressor
+      kdu_region_decompressor decompressor;
+
+      int component_index = labels[l].f;
+
+      //TODO: variable
+      int discard_levels = 0;
+
+      //Get safe expansion factors for the decompressor
+      //Safe upper bounds & minmum product returned into the following variables
+      double min_prod;
+      double max_x;
+      double max_y;
+      decompressor.get_safe_expansion_factors(
         codestream, //The codestream being decompressed
         NULL,  //Codestream's channel mapping (null because specifying index)
+        component_index,    //Check over all components
+        discard_levels,     //DWT levels to discard (resolution reduction)
+        min_prod,
+        max_x,
+        max_y
+      );
+
+      kdu_dims component_dims;  //Holds expanded component coordinates (post discard)
+      kdu_dims incomplete_region;  //Holds the region that is incomplete after processing run
+      kdu_dims new_region;  //Holds the region that is rendered after a processing run
+
+      //Get the expansion factors for expansion TODO: non 1x expansion
+      kdu_coords scale_num;
+      scale_num.set_x(1); scale_num.set_y(1);
+      kdu_coords scale_den;
+      scale_den.set_x(1); scale_den.set_y(1);
+
+      //Get the size of the complete component (after discard levels decrease
+      //in resolution is applied) on the rendering canvas
+      component_dims = decompressor.get_rendered_image_dims(
+        codestream, //The codestream being decompressed
+        NULL,       //Codestream's channel mapping (null because specifying index)
         component_index,  //Component being decompressed
         discard_levels,   //DWT levels to discard (resolution reduction)
-        INT_MAX,    //Max quality layers
-        region,      //Region to decompress
-        scale_num,  //Expansion factors
-        scale_den,
-        &env        //Multi-threading environment
+        scale_num,
+        scale_den
       );
 
-      //Decompress until buffer is filled (block is fully decompressed)
-      //cout << "Processing\n";
-      incomplete_region = component_dims;
-      while(
-        decompressor.process(     //Buffer to write into:
-          (kdu_int32 *) image_data_batch[image_data_batch.size() - 1],
-          region.pos,             //Buffer origin
-          region.size.x,          //Row gap
-          256000,                 //Suggesed increment
-          0,                      //Max pixels in region
-          incomplete_region,
-          new_region
-        )
-      );
-      //Finalise decompressing run
-      //cout << "Finishing decompression\n";
-      decompressor.finish();
+      //Should a region not fully be included in the image then skip to the next label
+      if( region.pos.x < component_dims.pos.x ||
+          region.pos.x + region.size.x > component_dims.pos.x + component_dims.size.x ||
+          region.pos.y < component_dims.pos.y ||
+          region.pos.y + region.size.y > component_dims.pos.y + component_dims.size.y){
+            continue;
+      }
 
-    //Render until there is no incomplete region remaining
-    }while(!incomplete_region.is_empty());
+      //Create a buffer to send the data across into
+      int bufsize = INPUT_WIDTH*INPUT_HEIGHT;
+      kdu_uint32 buffer[bufsize];
 
-    //Add the label to the batch
-    label_batch.push_back(labels[l].isGalaxy);
+      //Loop decompression to ensure that amount of DWT discard levels doesn't
+      //exceed tile with minimum DWT levels
+      do{
+        //Set up decompressing run
+        //cout << "Starting decompression\n";
+        decompressor.start(
+          codestream, //The codestream being decompressed
+          NULL,  //Codestream's channel mapping (null because specifying index)
+          component_index,  //Component being decompressed
+          discard_levels,   //DWT levels to discard (resolution reduction)
+          INT_MAX,    //Max quality layers
+          region,      //Region to decompress
+          scale_num,  //Expansion factors
+          scale_den,
+          &env        //Multi-threading environment
+        );
 
-    //Optimise over a batch (reduces noise in the cost function)
-    if(image_data_batch.size() == BATCH_SIZE){
-      //Feed in the batch
-      feed_batch_and_print_results( image_data_batch, label_batch,
-                                    t_pos, f_pos, t_neg, f_neg,
-                                    units_expected, updateModel,
-                                    digits, graph_name);
+        //Decompress until buffer is filled (block is fully decompressed)
+        //cout << "Processing\n";
+        incomplete_region = component_dims;
+        while(
+          decompressor.process(     //Buffer to write into:
+            (kdu_int32 *) buffer,
+            region.pos,             //Buffer origin
+            region.size.x,          //Row gap
+            256000,                 //Suggesed increment
+            0,                      //Max pixels in region
+            incomplete_region,
+            new_region
+          )
+        );
+        //Finalise decompressing run
+        //cout << "Finishing decompression\n";
+        decompressor.finish();
 
-      //Finished with batch data
-      image_data_batch.clear();
-      label_batch.clear();
+      //Render until there is no incomplete region remaining
+      }while(!incomplete_region.is_empty());
+
+      //Send the now complete image data
+      int image_transmitted = send(server, &buffer, sizeof(buffer), 0);
+      if(image_transmitted != bufsize*4){
+        cout << "Error: image " << l << " was not sent completely over socket, "
+          << "len=" << image_transmitted << "\n";
+        return;
+      }
+
+      //And the label (1 -> galaxy, 0 -> noise)
+      kdu_uint32 label_int = (labels[l].isGalaxy ? 1 : 0);
+      int label_transmitted = send(server, &label_int, sizeof(label_int), 0);
+      if(label_transmitted != 1*4){
+        cout << "Error: label " << l << " was not sent completely over socket, "
+          << "len=" << label_transmitted << "\n";
+        return;
+      }
     }
+
+    //Close the socket in the parent and prevent further transmissions. The
+    //python process can still recv though
+    if(shutdown(sockfd, SHUT_WR) != 0){
+      cout << "Error, couldn't shutdown socket in parent\n";
+    }
+
+    //Wait for death of child
+    while(wait(&status) != pid){
+      cout << "Waiting for child\n";
+    }
+
+  }else{
+    //Fork failure
+    cout << "Error: 'fork()' failed when creating python training process\n";
+    exit(EXIT_FAILURE);
   }
-
-  //If there are any leftovers in the batch then feed them into the neural net
-  if(image_data_batch.size() != 0){
-    //Feed in the batch
-    feed_batch_and_print_results( image_data_batch, label_batch,
-                                  t_pos, f_pos, t_neg, f_neg,
-                                  units_expected, updateModel,
-                                  digits, graph_name);
-
-    //Finished with batch data
-    image_data_batch.clear();
-    label_batch.clear();
-  }
-
-  //At this point all valid training units have been fed into the network
-  cout << t_pos + f_pos + t_neg + f_neg
-    << "/" << units_expected
-    << ((updateModel) ? " training" : " validation")
-    << " units found in image bounds and fed into network\n";
 }
 
 //Converts 1D kdu_uint32 to 1D numpy array with dimension info for passing to python
@@ -885,6 +742,8 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
     PyObject* py_result;
     py_result = PyObject_CallObject(py_func, Py_BuildValue("(s)", graph_name));
     PyErr_Print();
+
+    //Now that the graph is compiled, load the compiled graph onto the NCS
   }
 
   for(int c = start_component_index; c <= final_component_index; c++){
@@ -1061,13 +920,14 @@ int main(int argc, char **argv){
   char *component_range = NULL;
   int resolution_level  = -1;
   char *rect_string     = NULL;
+  int port_no           = -1;
 
   //For getopt
   int index;
   int arg;
 
   //Run getopt loop
-  while((arg = getopt(argc, argv, "f:tve:g:c:r:")) != -1){
+  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:")) != -1){
     switch(arg){
       case 'f': //Filepath to image
         jpx_filepath = optarg;
@@ -1090,6 +950,9 @@ int main(int argc, char **argv){
         break;
       case 'r': //Resolution level to use
         resolution_level = atoi(optarg);  //Convert to int
+        break;
+      case 'p': //Port number to IPC on;
+        port_no = atoi(optarg);
         break;
       case '?':
         //getopt handles error print statements
@@ -1247,7 +1110,7 @@ int main(int argc, char **argv){
     //be update (which it should during training)
     train(labels, codestream, graph_name, env,
           start_component_index, final_component_index,
-          resolution_level, isTrain);
+          resolution_level, isTrain, port_no);
   }
   if(isEval){
     //Don't actually need any labels here, just get started
@@ -1276,6 +1139,5 @@ int main(int argc, char **argv){
   end_embedded_python();
 
   //Exit with success
-  cout << "Exiting successfully\n";
   return 0;
 }

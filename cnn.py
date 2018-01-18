@@ -13,9 +13,14 @@ if not hasattr(sys, 'argv'):
 import shutil                       #For directory deletion
 import numpy as np                  #For transforming blocks
 import matplotlib.pyplot as plt     #For visualisation
+from texttable import Texttable     #For outputting
 import math                         #For logs
 import time                         #For debugging with catchup
 import subprocess                   #For compiling graphs
+import socket                       #For IPC
+import select                       #For waiting for socket to fill
+import errno                        #Handling socket errors
+import struct                       #For converting kdu_uint32s to uint32s
 import tensorflow as tf             #For deep learning
 from mvnc import mvncapi as mvnc    #For Movidius NCS API
 
@@ -97,12 +102,24 @@ def make_compatible(image_data, save_image):
     #Give it back
     return output
 
-#Recieves a training unit and trains the graph on it
-def use_supervised_batch(   image_data_batch,
-                            label_batch,
-                            graph_name,
-                            optimise_and_save):
-    batch_size = len(image_data_batch)
+#Converts socket recieved bytes to integers
+def byte_string_to_int_array(bytes):
+    data = []
+    i = 0
+    while i < len(bytes):
+        data.append(struct.unpack('I', bytes[i:(i + 4)]))
+        i = i + 4
+    return data
+
+#Boots up a concurrently running client that keeps the trainable graph in memory
+#to speed up training time. Updates depending on argument at the end of its run
+def run_training_client(graph_name, port, optimise_and_save, batch_size, total_units):
+    #Connect to specified port
+    print("Connecting client to port " + str(port))
+    sock = socket.socket()
+    sock.connect(('', port))
+    sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
+    timeout = 3         #Three second timeout
 
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
@@ -111,50 +128,152 @@ def use_supervised_batch(   image_data_batch,
     sess = tf.Session()
 
     #Load the graph to be trained & keep the saver for later updating
+    print("Loading graph '" + graph_name + "' for " + ("training" if optimise_and_save == 1 else "validation"))
     saver = restore_model(graph_name, sess)
 
-    #Convert to feedable format
-    image_input = []
-    label_input = []
-    for i in range(0, batch_size):
-        #Transform to tensorflow/Movidius NCS compatible and add to list of input
-        image_input.append(make_compatible(image_data_batch[i], False))
-        name = str(i)
-        if label_batch[i] == 1:
-            name += "-G"
-        elif label_batch[i] == 0:
-            name += "-N"
-        save_array_as_fig(np.uint8(np.reshape(image_data_batch[i], (WIDTH, HEIGHT))), name);
+    #Prepare to track information
+    t_pos = 0   #Correct classified a galaxy
+    f_pos = 0   #Guessed galaxy when should have been noise
+    t_neg = 0   #Correctly classified noise
+    f_neg = 0   #Guessed noise when should have been galaxy
 
-        #Convert label input into array of scalar arrays
-        label_input.append([label_batch[i]])
+    #Recieve supervised data. Take 4 times as many as recieving uint32s (kdu_uint32s)
+    #and convert
+    recieving = True
+    image_batch = []
+    label_batch = []
+    batch_num = 0
+    units_num = 0
+    while recieving:
+        #When ready then recv
+        ready = select.select([sock], [], [], timeout)
+        if ready[0]:
+            #If WIDTH*HEIGHT*4 units are recieved then this is an image
+            image_bytes = sock.recv((WIDTH*HEIGHT)*4)
+            image_input = byte_string_to_int_array(image_bytes)
+            if len(image_input) == WIDTH*HEIGHT:
+                #Make the image tensorflow graph compatible
+                image_batch.append(make_compatible(image_input, False))
+            else:
+                #No data found in socket, stop recving
+                print("Error: image data not recv'd correctly, finishing early")
+                break
+        else:
+            print("No image data found in socket batch remnant results:\n")
+            recieving = False
 
-    #Create a unitary feeder dictionary
-    feed_dict = {   'images:0': image_input,
-                    'labels:0': label_input,
-                    'is_training:0': update_model}
+        #When ready then recv
+        if recieving:   #Check if still reciving (image could've finished)
+            ready = select.select([sock], [], [], timeout)
+            if ready[0]:
+                #If 4 units are recieved then this is a label
+                label_bytes = sock.recv(1*4)
+                label_input = byte_string_to_int_array(label_bytes)
+                if len(label_input) == 1:
+                    #Make the label tensorflow compatible
+                    label_batch.append(label_input[0])
+                else:
+                    #No data found in socket, stop recving
+                    print("Error: label data not recv'd correctly, finishing early")
+                    break
+            else:
+                print("No label data found in socket, ending")
+                recieving = False
+
+        #Increment if a label and image came trhough (one unit)
+        units_num = units_num + 1
+
+        #If at end of data feed or if the batch is full then feed to graph
+        batch_ready = len(image_batch) == batch_size and len(label_batch) == batch_size;
+        if batch_ready or not recieving:
+            #Turn recieved info into a feeder dictionary
+            feed_dict = {   'images:0': image_batch,
+                            'labels:0': label_batch,
+                            'is_training:0': (optimise_and_save == 1)}
+
+            #If training then train
+            if optimise_and_save == 1:
+                #Feed into the network so it can 'learn' by running the adam optimiser
+                sess.run('Adam', feed_dict=feed_dict)
+
+            #What is the prediction for each image? (as prob [0,1])
+            preds = sess.run('predictor:0', feed_dict=feed_dict)
+
+            #Redundant for clarity here
+            batch_t_pos, batch_t_neg, batch_f_pos, batch_f_neg = 0, 0, 0, 0
+            for i in range(len(image_batch)):
+                pred_gal = preds[i][0] > 0.5
+                is_gal = label_batch[i][0] == 1
+
+                #Count types of failure
+                if pred_gal and is_gal:
+                    batch_t_pos = batch_t_pos + 1
+                elif pred_gal and not is_gal:
+                    batch_f_pos = batch_f_pos + 1
+                elif not pred_gal and is_gal:
+                    batch_f_neg = batch_f_neg + 1
+                elif not pred_gal and not is_gal:
+                    batch_t_neg = batch_t_neg + 1
+
+            #Increment running totals
+            t_pos = t_pos + batch_t_pos
+            f_pos = f_pos + batch_f_pos
+            f_neg = f_neg + batch_f_neg
+            t_neg = t_neg + batch_t_neg
+            batch_num = batch_num + 1
+
+            #Print running results
+            print("\t-units = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.2f}".format(100*units_num/total_units) + "%)")
+            #Prints current learning rate
+            print("\t-alpha = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
+            #Prints current loss
+            print("\t-loss  = " + str(sess.run('loss:0', feed_dict=feed_dict)))
+
+            #Print tabulated
+            table = Texttable()
+            table.set_precision(2)
+            table.set_cols_width([9, 7, 7, 7, 7, 7, 7, 7, 7, 7])
+            table.set_cols_align(['c', 'l', 'l', 'l', 'l', 'l', 'l', 'c', 'c', 'c'])
+            table.add_rows([
+                                ['SUMMARIES', 'T_GAL', 'T_NSE', 'T_TOT', 'F_GAL', 'F_NSE', 'F_TOT', 'GAL_%', 'NSE_%', 'TOT_%'],
+
+                                ['BATCH_' + str(batch_num),
+                                batch_t_pos,
+                                batch_f_neg,
+                                batch_t_pos + batch_t_neg,
+                                batch_f_pos,
+                                batch_f_neg,
+                                batch_f_pos + batch_f_neg,
+                                100*batch_t_pos/(batch_t_pos + batch_f_neg) if (batch_t_pos + batch_f_neg != 0) else 100,
+                                100*batch_t_neg/(batch_t_neg + batch_f_pos) if (batch_t_neg + batch_f_pos != 0) else 100,
+                                100*(batch_t_pos + batch_t_neg)/len(image_batch) ],
+
+                                ['SESSION',
+                                t_pos,
+                                f_neg,
+                                t_pos + t_neg,
+                                f_pos,
+                                f_neg,
+                                f_pos + f_neg,
+                                100*t_pos/(t_pos + f_neg) if (t_pos + f_neg != 0) else 100,
+                                100*t_neg/(t_neg + f_pos) if (t_neg + f_pos != 0) else 100,
+                                100*(t_pos + t_neg)/units_num ]
+                            ])
+            print(table.draw())
+            print("")
+
+            #Ready for new batch
+            image_batch = []
+            label_batch = []
 
     #Only optimise & save the graph if in training mode
     if optimise_and_save == 1:
-        #Feed into the network so it can 'learn' by running the adam optimiser
-        sess.run('Adam', feed_dict=feed_dict)
-
         #Save the slightly more trained graph if in training mode
+        print("Saving training modifications made to graph in this run")
         update_model(graph_name, sess, saver)
-
-    #Prints current loss
-    print("\t-loss (mean sigmoid cross entropy of batch) = " + str(sess.run('loss:0', feed_dict=feed_dict)))
-    #Prints current learning rate
-    print("\t-alpha = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
-
-    #What is the prediction for each image? (as bool)
-    preds = [x[0] > 0.5 for x in sess.run('predictor:0', feed_dict=feed_dict)]
 
     #Close tensorflow session
     sess.close()
-
-    #Return the training predictions
-    return preds
 
 #Recieves a unit and evaluates it using the graph
 def use_evaluation_unit_on_cpu( np_array,
@@ -186,14 +305,114 @@ def use_evaluation_unit_on_cpu( np_array,
     #Return result
     return pred
 
-'''
-#Loads a specified graph onto the connected NCS devices
-def compile_and_allocate_graph_onto_ncs(graph_name):
-'''
+#Must occur pre NCS usage, creates a version of the .meta file without any
+#training placeholders (otherwise will fail)
+def compile_for_ncs(graph_name):
+    #Create a graph, if graph is any larger then network will
+    #not be Movidius NCS compatible (reason unknown)
+    new_graph(id,      #Id/name
+              filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
+              num_filters=[32, 32], #Number of filters in each Convolutional layer
+              fc_sizes=[128, 48],    #Number of neurons in fully connected layer
+              for_training=False)   #Gets rid of placeholders and training structures
+                                    #that aren't needed for NCS
+
+    #Prepare to save all this stuff
+    saver = tf.train.Saver(tf.global_variables())
+
+    #A session is required
+    sess = tf.Session()
+
+    #Initialise no placeholder architecture
+    sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
+
+    #Load in weights from trained graph
+    saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
+
+    #Save without placeholders
+    saver.save(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs")
+
+    #Finish session
+    sess.close()
+
+    #Compile graph with subprocess for NCS
+    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-for-ncs.graph'
+    subprocess.call([
+        'mvNCCompile',
+        (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.meta"),
+        "-in=images",
+        "-on=predictor",
+        "-s=12",
+        "-o=" + GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph",
+        "-is", str(Wgraph_nameTH), str(HEIGHT)
+    ],
+    stdout=open(os.devnull, 'wb')); #Suppress output
+
+#Boots up one NCS, loads a compiled version of the graph onto it and begins
+#running inferences on it
+def run_evaluation_client(graph_name, port):
+    #Compile a copy of the graph for the NCS architecture
+    compile_for_ncs(graph_name)
+
+    #Load the compiled graph
+    graph_file = None;
+    filepath = GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph"
+    with open(filepath, mode='rb') as f:
+        #Read it in
+        graph_file = f.read()
+
+    #Fork a child process for each available NCS
+    device_list = mvnc.EnumerateDevices()
+    for d in range(len(device_list)):
+        pid = os.fork()
+        if pid == 0:
+            #Parent, wait for children to finish evaluation run
+
+        else:
+            #Child, open an NCS
+            device = mvnc.Device(device_list[d])
+            device.OpenDevice()
+
+            #Allocate the compiled graph onto the device and get a reference
+            #for later deallocation
+            graph_ref = device.AllocateGraph(graph_file)
+
+            #Connect to socket
+            print("Connecting process controlling NCS " + str(d) + " to port " + str(port))
+            sock = socket.socket()
+            sock.connect(('', port))
+            sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
+            timeout = 3         #Three second timeout
+
+            #Load image data from socket while there is image data to load
+            recieving = True
+            while recieving:
+
+                #Load image data from socket
+
+                #Track the prediction
+                pred = None
+                if graph_ref.LoadTensor(image_input, "images"):
+                    #Get output of graph
+                    output, userobj = graph_ref.GetResult()
+                    pred = output[0]
+
+                else:
+                    print("Error evaluating output of neural network, continue")
+                    continue
+
+            #Finished recieving, deallocate the graph from the device
+            graph_ref.DeallocateGraph()
+
+            #Close opened device
+            device.CloseDevice()
+
+            #Kill child
+            sys.exit()
 
 #Recieves a unit and evaluates it using the graph on 1 or more Movidius NCS'
-def use_evaluation_unit_on_ncs( np_array,
-                                graph_name):
+def use_evaluation_unit_on_ncs(graph_name):
     #Load the compiled graph
     #print("Loading compiled graph")
     graph_file = None;
@@ -256,11 +475,6 @@ def use_evaluation_unit_on_ncs( np_array,
 
     else:
         print("No devices to enumerate, exiting")
-
-'''
-#Removes the allocated graph from the NCS and closes the device
-def deallocate_graph_from_ncs():
-'''
 
 #Plots the convolutional filter-weights for a given layer using matplotlib
 def plot_conv_weights(graph_name, layer_name):
@@ -579,50 +793,6 @@ def new_basic_training_graph(id):
     sess = tf.Session()
     save_model_as_meta(id, sess)
     sess.close()
-
-#Must occur pre NCS usage, creates a version of the .meta file without any
-#placeholders that aren't required for validation (otherwise will fail)
-def compile_for_ncs(id):
-    #Create a graph, if graph is any larger then network will
-    #not be Movidius NCS compatible (reason unknown)
-    new_graph(id,      #Id/name
-              filter_sizes=[5, 5],  #Convolutional layer filter sizes in pixels
-              num_filters=[32, 32], #Number of filters in each Convolutional layer
-              fc_sizes=[128, 48],    #Number of neurons in fully connected layer
-              for_training=False)   #Gets rid of placeholders and training structures
-                                    #that aren't needed for NCS
-
-    #Prepare to save all this stuff
-    saver = tf.train.Saver(tf.global_variables())
-
-    #A session is required
-    sess = tf.Session()
-
-    #Initialise no placeholder architecture
-    sess.run(tf.global_variables_initializer())
-    sess.run(tf.local_variables_initializer())
-
-    #Load in weights from trained graph
-    saver.restore(sess, GRAPHS_FOLDER + "/" + id + "/" + id)
-
-    #Save without placeholders
-    saver.save(sess, GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs")
-
-    #Finish session
-    sess.close()
-
-    #Compile graph with subprocess for NCS
-    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-for-ncs.graph'
-    subprocess.call([
-        'mvNCCompile',
-        (GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs.meta"),
-        "-in=images",
-        "-on=predictor",
-        "-s=12",
-        "-o=" + GRAPHS_FOLDER + "/" + id + "/" + id + "-for-ncs.graph",
-        "-is", str(WIDTH), str(HEIGHT)
-    ],
-    stdout=open(os.devnull, 'wb')); #Suppress output
 
 #Restores the model (graph and variables) from a supplied filepath
 def restore_model(id, sess):
