@@ -1,12 +1,11 @@
 //Compile with makefile provided
 
-//For example:  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,899
-//              ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -v -r 0 -c 900,993
-//              ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -e 165,1640,35,40 -r 0 -c 994,994
+//For example:  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,899 -p 10000
+//              ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -v -r 0 -c 900,993 -p 10000
+//              ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -e 165,1640,35,40 -r 0 -c 994,994 -p 10000
 
 //C++ standard includes
 #include <iostream>     //For cout
-#include <iomanip>      //For pretty printing
 #include <sstream>      //For parsing command line arguments
 #include <string>       //For xtoy conversions
 #include <algorithm>    //For min
@@ -17,11 +16,11 @@
 
 //IPC/networking & process management includes
 #include <sys/types.h>
-#include <sys/socket.h>
+#include <sys/socket.h> //For sockets
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/wait.h>
+#include <sys/wait.h>   //For wait
+#include <errno.h>      //Gonna need it ...
 
 //KDU includes
 #include "jpx.h"
@@ -52,9 +51,6 @@ const int INPUT_HEIGHT = 32;
 
 //Number of images to feed per batch (minibatch)
 const int BATCH_SIZE = 96;
-
-//Whether or not to reun evaluation of CPU or NCS'
-const bool EVALUATE_ON_NCS = true;
 
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //
@@ -652,9 +648,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     }
 
     //Wait for death of child
-    while(wait(&status) != pid){
-      cout << "Waiting for child\n";
-    }
+    while(wait(&status) != pid);
 
   }else{
     //Fork failure
@@ -663,37 +657,14 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
   }
 }
 
-//Converts 1D kdu_uint32 to 1D numpy array with dimension info for passing to python
-//for evaluation
-PyObject *get_evaluation_unit(kdu_uint32 array[],
-                              char *graph_name)
-{
-  //Dimension of array
-  npy_intp dim = INPUT_WIDTH*INPUT_HEIGHT;
-
-  //Build value that can be passed to python function. Value is a 1 dimensional
-  //w x h array of uint32s with the dimensions and spacing info appended as a tuple
-  PyObject* evaluation_unit = Py_BuildValue("(O, s)",
-    PyArray_SimpleNewFromData (
-                                1,
-                                &dim,
-                                NPY_UINT32,
-                                (void *)array
-                              ),
-    graph_name
-  );
-
-  //Allocate memory for a 1 x size numpy array of uint32s and input buffer data
-  return evaluation_unit;
-}
-
 //Called when evaluating an image is specified
 void evaluate(  kdu_codestream codestream, char *graph_name,
                 kdu_thread_env & env,
                 int start_component_index, int final_component_index,
                 int resolution_level,
                 int limit_rect_x, int limit_rect_y,
-                int limit_rect_w, int limit_rect_h)
+                int limit_rect_w, int limit_rect_h,
+                int port_no)
 {
 
   //To evaluate, a sliding window over the image at the required components is
@@ -717,13 +688,30 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
   cout << "Image will be fed in " << evaluation_units_expected
     << " regions to " << graph_name << " network\n";
 
-  //Decompress using a sliding window
-  //spacial coordinates using kakadu decompressor
-  kdu_region_decompressor decompressor;
+  //Set up a sockets
+  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  if(sockfd < 0){
+    cout << "Error: couldn't establish socket for server in C++ process\n";
+    return;
+  }
 
-  //If we're evaluating on the NCS's not the CPU, then the graph will
-  //need to be compiled for the NCS
-  if(EVALUATE_ON_NCS){
+  //Set up server using socket
+  struct sockaddr_in server_addr;
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = htons(INADDR_ANY);
+  server_addr.sin_port = htons(port_no);
+
+  //Bind server to socket
+  if((bind(sockfd, (struct sockaddr*)&server_addr,sizeof(server_addr))) < 0){
+    cout << "Error: couldn't bind connection to already established socket\n";
+    return;
+  }
+
+  //Fork the python evaluation program
+  int status;
+  pid_t pid = fork();
+  if(pid == 0){
+    //Child, create the python training process here (requires graph name)
     //Get filename
     PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
     PyErr_Print();
@@ -732,179 +720,173 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
     PyObject* py_module = PyImport_Import(py_name);
     PyErr_Print();
 
-    //Get function name from module
+    //Get function name from module depending on if validating or training
     PyObject* py_func;
-    py_func = PyObject_GetAttrString(py_module,
-                                    (char*)"compile_for_ncs");
+    py_func = PyObject_GetAttrString(py_module, (char*)"use_evaluation_unit_on_cpu");
+  //  py_func = PyObject_GetAttrString(py_module, (char*)"run_evaluation_client");
     PyErr_Print();
 
-    //Call the compile function for the graph required
-    PyObject* py_result;
-    py_result = PyObject_CallObject(py_func, Py_BuildValue("(s)", graph_name));
+    //Call function with the graph to train on and the port to listen for
+    //training data on
+    PyObject_CallObject(py_func, Py_BuildValue("(s, i)",
+      graph_name,
+      port_no
+    ));
     PyErr_Print();
 
-    //Now that the graph is compiled, load the compiled graph onto the NCS
-  }
+    //Child process now finished, destroy
+    exit(EXIT_SUCCESS);
 
-  for(int c = start_component_index; c <= final_component_index; c++){
-    //For consistency
-    int component_index = c;
-    for(int x = limit_rect_x; x < image_width; x += stride_x){
-      for(int y = limit_rect_y; y < image_height; y += stride_y){
-        //Construct a region from the label data
-        kdu_dims region;
-        region.access_pos()->set_x(x);
-        region.access_size()->set_x(INPUT_WIDTH);
-        region.access_pos()->set_y(y);
-        region.access_size()->set_y(INPUT_HEIGHT);
+  }else if (pid > 0){
+    //Parent, wait for 1 python client to connect here
+    listen(sockfd, 1);
+    socklen_t size = sizeof(server_addr);
+    int server = accept(sockfd, (struct sockaddr *)&server_addr, &size);
+    if(server < 0){
+      cout << "Error: couldn't accept client connection\n";
+    }else{
+      cout << "Evaluation client successfully connected, begin streaming decompressed data\n";
+    }
 
-        //TODO: variable
-        int discard_levels = 0;
+    //Decompress using a sliding window
+    //spacial coordinates using kakadu decompressor
+    kdu_region_decompressor decompressor;
 
-        //Get safe expansion factors for the decompressor
-        //Safe upper bounds & minmum product returned into the following variables
-        double min_prod;
-        double max_x;
-        double max_y;
-        decompressor.get_safe_expansion_factors(
-          codestream, //The codestream being decompressed
-          NULL,  //Codestream's channel mapping (null because specifying index)
-          component_index,    //Check over all components
-          discard_levels,     //DWT levels to discard (resolution reduction)
-          min_prod,
-          max_x,
-          max_y
-        );
+    for(int c = start_component_index; c <= final_component_index; c++){
+      //For consistency
+      int component_index = c;
+      for(int x = limit_rect_x; x < image_width; x += stride_x){
+        for(int y = limit_rect_y; y < image_height; y += stride_y){
+          //Construct a region from the label data
+          kdu_dims region;
+          region.access_pos()->set_x(x);
+          region.access_size()->set_x(INPUT_WIDTH);
+          region.access_pos()->set_y(y);
+          region.access_size()->set_y(INPUT_HEIGHT);
 
-        kdu_dims component_dims;  //Holds expanded component coordinates (post discard)
-        kdu_dims incomplete_region;  //Holds the region that is incomplete after processing run
-        kdu_dims new_region;  //Holds the region that is rendered after a processing run
+          //TODO: variable
+          int discard_levels = 0;
 
-        //Get the expansion factors for expansion TODO: non 1x expansion
-        kdu_coords scale_num;
-        scale_num.set_x(1); scale_num.set_y(1);
-        kdu_coords scale_den;
-        scale_den.set_x(1); scale_den.set_y(1);
-
-        //Get the size of the complete component (after discard levels decrease
-        //in resolution is applied) on the rendering canvas
-        component_dims = decompressor.get_rendered_image_dims(
-          codestream, //The codestream being decompressed
-          NULL,       //Codestream's channel mapping (null because specifying index)
-          component_index,  //Component being decompressed
-          discard_levels,   //DWT levels to discard (resolution reduction)
-          scale_num,
-          scale_den
-        );
-
-        //Should a region not fully be included in the image then skip to the next
-        if( region.pos.x < component_dims.pos.x ||
-            region.pos.x + region.size.x > component_dims.pos.x + component_dims.size.x ||
-            region.pos.y < component_dims.pos.y ||
-            region.pos.y + region.size.y > component_dims.pos.y + component_dims.size.y){
-              break;
-        }
-
-        //Will hold data of decompressed region
-        kdu_uint32 *buffer = NULL;
-
-        //For managing and allocating decompressor image buffers
-        buffer = new kdu_uint32[(size_t) region.area()];
-
-        //Loop decompression to ensure that amount of DWT discard levels doesn't
-        //exceed tile with minimum DWT levels
-        do{
-          //Set up decompressing run
-          //cout << "Starting decompression\n";
-          decompressor.start(
+          //Get safe expansion factors for the decompressor
+          //Safe upper bounds & minmum product returned into the following variables
+          double min_prod;
+          double max_x;
+          double max_y;
+          decompressor.get_safe_expansion_factors(
             codestream, //The codestream being decompressed
             NULL,  //Codestream's channel mapping (null because specifying index)
+            component_index,    //Check over all components
+            discard_levels,     //DWT levels to discard (resolution reduction)
+            min_prod,
+            max_x,
+            max_y
+          );
+
+          kdu_dims component_dims;  //Holds expanded component coordinates (post discard)
+          kdu_dims incomplete_region;  //Holds the region that is incomplete after processing run
+          kdu_dims new_region;  //Holds the region that is rendered after a processing run
+
+          //Get the expansion factors for expansion TODO: non 1x expansion
+          kdu_coords scale_num;
+          scale_num.set_x(1); scale_num.set_y(1);
+          kdu_coords scale_den;
+          scale_den.set_x(1); scale_den.set_y(1);
+
+          //Get the size of the complete component (after discard levels decrease
+          //in resolution is applied) on the rendering canvas
+          component_dims = decompressor.get_rendered_image_dims(
+            codestream, //The codestream being decompressed
+            NULL,       //Codestream's channel mapping (null because specifying index)
             component_index,  //Component being decompressed
             discard_levels,   //DWT levels to discard (resolution reduction)
-            INT_MAX,    //Max quality layers
-            region,      //Region to decompress
-            scale_num,  //Expansion factors
-            scale_den,
-            &env        //Multi-threading environment
+            scale_num,
+            scale_den
           );
 
-          //Decompress until buffer is filled (block is fully decompressed)
-          //cout << "Processing\n";
-          incomplete_region = component_dims;
-          while(
-            decompressor.process(
-              (kdu_int32 *) buffer,   //Buffer to write into
-              region.pos,             //Buffer origin
-              region.size.x,          //Row gap
-              256000,                 //Suggesed increment
-              0,                      //Max pixels in region
-              incomplete_region,
-              new_region
-            )
-          );
-          //Finalise decompressing run
-          //cout << "Finishing decompression\n";
-          decompressor.finish();
+          //Should a region not fully be included in the image then skip to the next
+          if( region.pos.x < component_dims.pos.x ||
+              region.pos.x + region.size.x > component_dims.pos.x + component_dims.size.x ||
+              region.pos.y < component_dims.pos.y ||
+              region.pos.y + region.size.y > component_dims.pos.y + component_dims.size.y){
+                break;
+          }
 
-        //Render until there is no incomplete region remaining
-        }while(!incomplete_region.is_empty());
+          //Create a buffer to send the data across into
+          int bufsize = INPUT_WIDTH*INPUT_HEIGHT;
+          kdu_uint32 buffer[bufsize];
 
-        //Finished decompressing here, pass it to the network graph for evaluation
-        //Pass kdu_uint32 as numpy array into python3 tensorflow.
-        PyObject* evaluation_unit = get_evaluation_unit(
-          buffer,                         //Data
-          graph_name                      //Graph to train on
-        );
+          //Loop decompression to ensure that amount of DWT discard levels doesn't
+          //exceed tile with minimum DWT levels
+          do{
+            //Set up decompressing run
+            //cout << "Starting decompression\n";
+            decompressor.start(
+              codestream, //The codestream being decompressed
+              NULL,  //Codestream's channel mapping (null because specifying index)
+              component_index,  //Component being decompressed
+              discard_levels,   //DWT levels to discard (resolution reduction)
+              INT_MAX,    //Max quality layers
+              region,      //Region to decompress
+              scale_num,  //Expansion factors
+              scale_den,
+              &env        //Multi-threading environment
+            );
 
-        //Call the function in python to load the training unit as a tensor
-        //Get filename
-        PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
-        PyErr_Print();
+            //Decompress until buffer is filled (block is fully decompressed)
+            //cout << "Processing\n";
+            incomplete_region = component_dims;
+            while(
+              decompressor.process(
+                (kdu_int32 *) buffer,   //Buffer to write into
+                region.pos,             //Buffer origin
+                region.size.x,          //Row gap
+                256000,                 //Suggesed increment
+                0,                      //Max pixels in region
+                incomplete_region,
+                new_region
+              )
+            );
+            //Finalise decompressing run
+            //cout << "Finishing decompression\n";
+            decompressor.finish();
 
-        //Import file as module
-        PyObject* py_module = PyImport_Import(py_name);
-        PyErr_Print();
+          //Render until there is no incomplete region remaining
+          }while(!incomplete_region.is_empty());
 
-        //Get function name from module
-        PyObject* py_func;
-        if(EVALUATE_ON_NCS){
-          py_func = PyObject_GetAttrString(py_module,
-                                          (char*)"use_evaluation_unit_on_ncs");
-        }else{
-          py_func = PyObject_GetAttrString(py_module,
-                                          (char*)"use_evaluation_unit_on_cpu");
+          //Send the now complete image data
+          int image_transmitted = send(server, &buffer, sizeof(buffer), 0);
+          if(image_transmitted != bufsize*4){
+            cout << "Error: image " << evaluation_units_fed + 1
+              << " (" << x << ", " << y << ", "  << c
+              << ") was not sent completely over socket, "
+              << "len=" << image_transmitted << "\n";
+            return;
+          }
+
+          //Track
+          evaluation_units_fed++;
         }
-        PyErr_Print();
-
-        //Call function with numpy aray
-        PyObject* py_result;
-        py_result = PyObject_CallObject(py_func, evaluation_unit);
-        PyErr_Print();
-
-        //Use the results to track successes
-        double prediction = -1;
-        if(py_result != NULL){
-          //PyObject_IsTrue returns 1 if py_result is true and 0 if it is false
-          prediction = PyFloat_AsDouble(py_result);
-        }else{
-          cout << "Error: embedded python3 evaluation function returning incorrectly\n";
-        }
-
-        //Announce and track the number of training units fed
-        evaluation_units_fed++;
-        cout << "\t-evaluation unit " << evaluation_units_fed << "/"
-          << evaluation_units_expected <<  " fed to network, prediction: "
-          << ((prediction > 0.5) ? "galaxy" : "not galaxy")
-          << " (" << prediction << ")\n";
+        //If done a full line then increment into next column
+        cols_fed++;
       }
-      cols_fed++;
-      cout << "\t\t-col " << cols_fed << "/"
-        << cols_expected <<  " fed to network\n";
+      //Outside of sliding window loops
     }
-    //Outside of for loops
-  }
-  //Outside of component loop
+    //Outside of component loop
 
+    //Close the socket in the parent and prevent further transmissions. The
+    //python process can still recv though
+    if(shutdown(sockfd, SHUT_WR) != 0){
+      cout << "Error, couldn't shutdown socket in parent\n";
+    }
+
+    //Wait for death of child (python evaluation process)
+    while(wait(&status) != pid);
+
+  }else{
+    //Fork failure
+    cout << "Error: 'fork()' failed when creating python training process\n";
+    exit(EXIT_FAILURE);
+  }
 }
 
 //----------------------------------------------------------------------------//
@@ -1118,7 +1100,8 @@ int main(int argc, char **argv){
               start_component_index, final_component_index,
               resolution_level,
               limit_rect_x, limit_rect_y,
-              limit_rect_w, limit_rect_h);
+              limit_rect_w, limit_rect_h,
+              port_no);
   }
 
   //Destroy references
