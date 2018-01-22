@@ -1,8 +1,9 @@
 //Compile with makefile provided
 
-//For example:  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,899 -p 10000
-//              ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -v -r 0 -c 900,993 -p 10000
-//              ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -e 165,1640,35,40 -r 0 -c 994,994 -p 10000
+//For example:
+//  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,899 -p 10000
+//  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -v -r 0 -c 900,993 -p 10000
+//  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -e 2852,3492,6,6 -r 0 -c 48,48 -p 10000
 
 //C++ standard includes
 #include <iostream>     //For cout
@@ -50,7 +51,7 @@ const int INPUT_WIDTH = 32;
 const int INPUT_HEIGHT = 32;
 
 //Number of images to feed per batch (minibatch)
-const int BATCH_SIZE = 96;
+const int BATCH_SIZE = 8;
 
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //
@@ -722,8 +723,8 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
 
     //Get function name from module depending on if validating or training
     PyObject* py_func;
-    py_func = PyObject_GetAttrString(py_module, (char*)"use_evaluation_unit_on_cpu");
-  //  py_func = PyObject_GetAttrString(py_module, (char*)"run_evaluation_client");
+    //py_func = PyObject_GetAttrString(py_module, (char*)"use_evaluation_unit_on_cpu");
+    py_func = PyObject_GetAttrString(py_module, (char*)"run_evaluation_client");
     PyErr_Print();
 
     //Call function with the graph to train on and the port to listen for

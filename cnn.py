@@ -12,7 +12,7 @@ if not hasattr(sys, 'argv'):
 
 import shutil                       #For directory deletion
 import numpy as np                  #For transforming blocks
-#import matplotlib.pyplot as plt     #For visualisation
+import matplotlib.pyplot as plt     #For visualisation
 from texttable import Texttable     #For outputting
 import math                         #For logs
 import time                         #For debugging with catchup
@@ -33,7 +33,6 @@ os.environ['TF_CPP_MIN_LOG_LEVEL']='1'  #1 filters all
                                         #2 filters warnings
                                         #3 filters none
 
-
 #Global variables
 #Relative paths
 GRAPHS_FOLDER = "./graphs"
@@ -42,7 +41,7 @@ LOGS_FOLDER = "./logs"
 #Names of inputs and outputs in tensorflow graph (for compiling for NCS)
 #See 'new_graph' function for options
 INPUT_NAME = "images"
-OUTPUT_NAME = "fc_0"
+OUTPUT_NAME = "predictor"
 
 #Hardcoded image input dimensions
 WIDTH = 32
@@ -50,8 +49,8 @@ HEIGHT = 32
 
 #Globals for creating graphs
 FILTER_SIZES    =   [5, 5]      #Convolutional layer filter sizes in pixels
-NUM_FILTERS     =   [6, 16]     #Number of filters in each Convolutional layer
-FC_SIZES        =   [32, 16]   #Number of neurons in fully connected layer
+NUM_FILTERS     =   [16, 32]     #Number of filters in each Convolutional layer
+FC_SIZES        =   [384, 64]   #Number of neurons in fully connected layer
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -84,6 +83,8 @@ def save_array_as_fig(img_array, name):
     plt.imshow( img_array, cmap="Greys_r", vmin=0, vmax=255,
                 interpolation='nearest')
 
+    global FILE_SUF
+
     fig.savefig("output/" + name)
 
     #Explicity close figure for memory usage
@@ -98,11 +99,11 @@ def make_compatible(image_data, save_image):
 
     #Cast to 8-bit unsigned integer
     output = np.uint8(output)
-'''
+
     #Output an image if required while uint8
     if save_image:
         save_array_as_fig(output, 'test')
-'''
+
     #Now cast
     output = np.float16(output)
 
@@ -169,7 +170,8 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
                 print("Error: image data not recv'd correctly, finishing early")
                 break
         else:
-            print("No data found in socket, remaining batch had " + str(len(image_batch)) + " units:")
+            if len(image_batch) != 0:
+                print("No data found in socket, remaining batch had " + str(len(image_batch)) + " units:")
             recieving = False
 
         #When ready then recv
@@ -196,7 +198,7 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
 
         #If at end of data feed or if the batch is full then feed to graph
         batch_ready = len(image_batch) == batch_size and len(label_batch) == batch_size;
-        if batch_ready or not recieving:
+        if batch_ready or (not recieving and len(image_batch) != 0):
             #Turn recieved info into a feeder dictionary
             feed_dict = {   'images:0': image_batch,
                             'labels:0': label_batch,
@@ -234,44 +236,79 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             batch_num = batch_num + 1
 
             #Print running results
-            print("\t-units = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.4f}".format(100*units_num/total_units) + "% of session complete)")
+            print("\t-units = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.4f}".format(100*units_num/total_units) + "% of units fed)")
             #Prints current learning rate
             print("\t-alpha = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
             #Prints current loss
             print("\t-loss  = " + str(sess.run('loss:0', feed_dict=feed_dict)))
 
-            #Print tabulated
-            table = Texttable()
-            table.set_precision(4)
-            table.set_cols_width([9, 7, 7, 7, 7, 7, 7, 7, 7, 7])
-            table.set_cols_align(['c', 'l', 'l', 'l', 'l', 'l', 'l', 'c', 'c', 'c'])
-            table.add_rows([
-                                ['SUMMARIES', 'T_GAL', 'T_NSE', 'T_TOT', 'F_GAL', 'F_NSE', 'F_TOT', 'GAL_%', 'NSE_%', 'TOT_%'],
+            #Print tabulated gal data
+            tableGal = Texttable()
+            tableGal.set_precision(4)
+            tableGal.set_cols_width([11, 7, 7, 7, 7])
+            tableGal.set_cols_align(['r', 'r', 'r', 'r', 'r'])
+            tableGal.add_rows([
+                                ['GAL_PREDs', 'T', 'F', 'T+F', '%'],
 
                                 ['BATCH_' + str(batch_num),
                                 batch_t_pos,
-                                batch_t_neg,
-                                batch_t_pos + batch_t_neg,
                                 batch_f_pos,
-                                batch_f_neg,
-                                batch_f_pos + batch_f_neg,
-                                "{0:.4f}".format(100*batch_t_pos/(batch_t_pos + batch_f_neg) if (batch_t_pos + batch_f_neg != 0) else 100),
-                                "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_pos) if (batch_t_neg + batch_f_pos != 0) else 100),
-                                "{0:.4f}".format(100*(batch_t_pos + batch_t_neg)/len(image_batch)) ],
+                                batch_t_pos + batch_f_pos,
+                                "{0:.4f}".format(100*batch_t_pos/(batch_t_pos + batch_f_neg) if (batch_t_pos + batch_f_neg != 0) else 100)],
 
                                 ['SESSION',
                                 t_pos,
-                                t_neg,
-                                t_pos + t_neg,
                                 f_pos,
-                                f_neg,
+                                t_pos + f_pos,
+                                "{0:.4f}".format(100*t_pos/(t_pos + f_neg) if (t_pos + f_neg != 0) else 100)]
+                            ])
+            print(tableGal.draw())
+
+            #Print tabulated nse data
+            tableNse = Texttable()
+            tableNse.set_precision(4)
+            tableNse.set_cols_width([11, 7, 7, 7, 7])
+            tableNse.set_cols_align(['r', 'r', 'r', 'r', 'r'])
+            tableNse.add_rows([
+                                ['NSE_PREDs', 'T', 'F', 'T+F', '%'],
+
+                                ['BATCH_' + str(batch_num),
+                                batch_t_neg,
+                                batch_f_neg,
+                                batch_t_neg + batch_f_neg,
+                                "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_pos) if (batch_t_neg + batch_f_pos != 0) else 100)],
+
+                                ['SESSION',
+                                t_pos,
+                                f_pos,
+                                t_pos + f_pos,
+                                "{0:.4f}".format(100*t_neg/(t_neg + f_pos) if (t_neg + f_pos != 0) else 100)]
+                            ])
+            print(tableNse.draw())
+
+            #Print tabulated summary
+            tableSum = Texttable()
+            tableSum.set_precision(4)
+            tableSum.set_cols_width([11, 7, 7, 7, 7])
+            tableSum.set_cols_align(['r', 'r', 'r', 'r', 'r'])
+            tableSum.add_rows([
+                                ['ALL_PREDs', 'T', 'F', 'T+F', '%'],
+
+                                ['BATCH_' + str(batch_num),
+                                batch_t_pos + batch_t_neg,
+                                batch_f_pos + batch_f_neg,
+                                batch_t_neg + batch_f_neg + batch_t_pos + batch_f_pos,
+                                "{0:.4f}".format(100*(batch_t_pos + batch_t_neg)/len(image_batch)) ],
+
+                                ['SESSION',
+                                t_pos + t_neg,
                                 f_pos + f_neg,
-                                "{0:.4f}".format(100*t_pos/(t_pos + f_neg) if (t_pos + f_neg != 0) else 100),
-                                "{0:.4f}".format(100*t_neg/(t_neg + f_pos) if (t_neg + f_pos != 0) else 100),
+                                t_neg + f_neg + t_pos + f_pos,
                                 "{0:.4f}".format(100*(t_pos + t_neg)/units_num) ]
                             ])
-            print(table.draw())
+            print(tableSum.draw())
             print("")
+
 
             #Ready for new batch
             image_batch = []
@@ -324,10 +361,10 @@ def use_evaluation_unit_on_cpu(graph_name, port):
         if recieving:
             #Make the image graph compatible
             image_input = make_compatible(image_input, True)
-            eval_feed = np.reshape(image_input, (1, WIDTH, HEIGHT, 3))
 
             #Create a unitary feeder dictionary
-            feed_dict_eval = {'images:0': eval_feed, 'is_training:0': False}
+            feed_dict_eval = {  'images:0': [image_input],
+                                'is_training:0': False}
 
             #Get the prediction
             pred = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0]
@@ -359,7 +396,7 @@ def compile_for_ncs(graph_name):
     sess.run(tf.local_variables_initializer())
 
     #Load in weights from trained graph
-    saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
+    #saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
 
     #Save without placeholders
     saver.save(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs")
@@ -492,73 +529,8 @@ def run_evaluation_client(graph_name, port):
         else:
             print("Error: couldn't successfully fork a child for NCS " + str(d))
 
-#Recieves a unit and evaluates it using the graph on 1 or more Movidius NCS'
-def use_evaluation_unit_on_ncs(graph_name):
-    #Load the compiled graph
-    #print("Loading compiled graph")
-    graph_file = None;
-    filepath = GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph"
-    with open(filepath, mode='rb') as f:
-        #Read it in
-        graph_file = f.read()
-
-    #Find 1 or more NCS'
-    devicesNames = mvnc.EnumerateDevices()
-    if len(devicesNames) > 0:
-        #print("Enumerated " + str(len(devicesNames)) + " devices")
-
-        #For every device allocate the compiled graph
-        count = 0
-        for deviceName in devicesNames:
-            #Open the device
-            #print("Opening device " + str(count))
-            device = mvnc.Device(deviceName)
-            device.OpenDevice()
-
-            #Put the compiled graph onto the device and get a reference
-            #for later deallocation
-            #print("Allocating compiled graph onto device")
-            graph_ref = device.AllocateGraph(graph_file)
-
-            #Image input must conform to input placeholder dimensions
-            image_input = np.reshape(   make_compatible(np_array, True),
-                                        (1, WIDTH, HEIGHT, 3))
-            print(image_input.shape)
-
-            #Track the prediction
-            pred = None
-            if graph_ref.LoadTensor(image_input, "images"):
-                #Get output of graph
-                output, userobj = graph_ref.GetResult()
-
-                #print("GALAXY" if output[0] > 0.5 else "NOISE")
-                print(output.shape)
-                print(output)
-                pred = output[0]
-
-            else:
-                print("Error evaluating output of neural network, continue")
-                continue
-
-            #Deallocate the graph from the device
-            #print("Deallocating compiled graph from device")
-            graph_ref.DeallocateGraph()
-
-            #Close opened device
-            #print("Closing device " + str(count))
-            device.CloseDevice()
-
-            #TODO, don't exit immediately
-            #Return the prediction -> 0 for noise, 1 for galaxy
-            return pred
-
-            count = count + 1
-
-    else:
-        print("No devices to enumerate, exiting")
-
-#Plots the convolutional filter-weights for a given layer using matplotlib
-def plot_conv_weights(graph_name, layer_name):
+#Plots the convolutional filter-weights/kernel for a given layer using matplotlib
+def plot_conv_weights(graph_name, scope):
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
 
@@ -568,9 +540,11 @@ def plot_conv_weights(graph_name, layer_name):
     #Load the graph to be trained & keep the saver for later updating
     saver = restore_model(graph_name, sess)
 
-    #Retrieve the weights (don't need a feed dict as nothing is being calculated)
-    #A feed-dict is not necessary because nothing is calculated
-    w = sess.run([v for v in tf.global_variables() if v.name == (layer_name + ":0")][0])
+    #Get the weights
+    w = None
+    for v in tf.all_variables():
+        if v.name == scope + '/kernel:0':
+            w = sess.run(v)
 
     #Get the lowest and highest values for the weights to scale colour intensity
     #across filters
@@ -593,120 +567,19 @@ def plot_conv_weights(graph_name, layer_name):
 
             #Plot image
             ax.imshow(img, vmin=w_min, vmax=w_max,
-                      interpolation='nearest', cmap='Greys_r')
+                      interpolation='nearest', cmap='PiYG')
 
         #Remove ticks from the plot.
         ax.set_xticks([])
         ax.set_yticks([])
 
-    fig.savefig("output/" + layer_name)
+    fig.savefig("output/" + scope + "_kernel")
 
     #Explicity close figure for memory usage
     plt.close(fig)
 
     #Close tensorflow session (no need to save)
     sess.close()
-
-#Helper function for creating filters as a tensorflow variable within each layer
-def new_weights(shape, var_name):
-    #Weights start as noise and are eventually learned
-    return tf.Variable(tf.truncated_normal(shape, stddev=0.001), name=var_name)
-
-#Helper function for creating biases as a tensorflow variable within each layer
-def new_biases(length, var_name):
-    #Biases start as noise and are eventually learned
-    return tf.Variable(tf.constant(0.001, shape=[length]), name=var_name)
-
-#Helper function for creating a new convolution layer in a graph
-def new_conv_layer(prev_layer,         #the previous layer (input to this layer)
-                   num_input_channels, #how many channels in input image
-                   filter_size,        #width & height of each filter
-                   num_filters,        #number of filters
-                   conv_index):        #for naming
-
-    #Stringify index
-    conv_index = str(conv_index)
-
-    #Create filters with a given shape to be optimised over graph execution
-    #rank must be 4 for tensorflow conv2d
-    weights = new_weights(  shape=[filter_size, filter_size, num_input_channels, num_filters],
-                            var_name=("conv_weights_" + conv_index))
-
-    #Create biases to be optimised over graph execution
-    biases = new_biases(length=num_filters, var_name=("conv_biases_" + conv_index))
-
-    #This layer is a 2D convolution with padding of zeroes to ensure that shape
-    #remains consistent during convolution
-    layer = tf.nn.conv2d(input=prev_layer,
-                         filter=weights,
-                         strides=[1, 1, 1, 1],    #X & Y pixel strides are args 2 & 3
-                         padding='SAME',
-                         name=('conv_2d_' + conv_index))
-
-    #Add bias
-    layer += biases
-
-    #Apply pooling
-    layer = tf.nn.max_pool(value=layer,         #Take the layer
-                           ksize=[1, 2, 2, 1],  #2x2 max pooling over resolution
-                           strides=[1, 2, 2, 1],
-                           padding='SAME',      #Consistent shape
-                           name=('max_pool_' + conv_index))
-
-    #Apply activation function
-    layer = tf.nn.relu(layer, name=('conv_' + conv_index))
-
-    #Return the layer (and also the weights for inspection)
-    return layer
-
-#Helper function for flattening a layer before it is fed to a fully connected layer
-def flatten_layer(layer):
-    #Get the shape of the input layer
-    layer_shape = layer.get_shape()
-
-    #The shape of the input layer is assumed to be
-    #[num_images, img_height, img_width, num_channels]
-
-    #The number of features is: img_height * img_width * num_channels,
-    #calculated here
-    num_features = layer_shape[1:4].num_elements()
-
-    # Reshape the layer to [num_images, num_features]
-    layer_flat = tf.reshape(layer, [-1, num_features], name='conv_flatten')
-
-    #The shape of the flattened layer is now
-    #[num_images, img_height * img_width * num_channels]
-
-    #Return both the flattened layer and the number of features.
-    return layer_flat, num_features
-
-#Helper function for creating a new fully connected layer in a graph
-def new_fc_layer(prev_layer,         #the previous layer (input to this layer)
-                 num_inputs,         #number of images to be input
-                 num_outputs,        #number to be output
-                 final_fc_layer,
-                 fc_index):          #for unique variable naming
-
-    #Stringify index
-    fc_index = str(fc_index)
-
-    #Create new weights and biases
-    weights = new_weights(shape=[num_inputs, num_outputs], var_name=("fc_weights_" + fc_index))
-    biases = new_biases(length=num_outputs, var_name=("fc_biases_" + fc_index))
-
-    #Calculate the layer as the matrix multiplication of
-    #the input and weights, and then add the bias-values
-    layer = tf.matmul(prev_layer, weights, name=('fc_matmul_' + fc_index)) + biases
-
-    #Apply activation function if requested
-    if not final_fc_layer:
-        #Apply ReLU
-        layer = tf.nn.relu(layer, name='fc_' + fc_index)
-    else:
-        #No ReLU, just name
-        layer = tf.identity(layer, name='fc_' + fc_index)
-
-    return layer
 
 #Initialises a fresh graph and stores it for later training
 def new_graph(id,             #Unique identifier for saving the graph
@@ -722,7 +595,8 @@ def new_graph(id,             #Unique identifier for saving the graph
     print("Creating new graph: '" + str(id) + "'")
     print("\t*Structure details:")
 
-    #Movidius NCS requires an RGB 'colour' image
+    #Movidius NCS requires an RGB 'colour' image, even though our inputs are
+    #grayscale
     channels = 3
 
     #INPUT
@@ -745,32 +619,41 @@ def new_graph(id,             #Unique identifier for saving the graph
     #be optimised during graph execution. They also down-sample (pool) the image
     #after doing so. Filters are created in accordance with the arguments to this
     #function
-    layer_conv0 = new_conv_layer(   prev_layer=images,
-                                    num_input_channels=channels,
-                                    filter_size=filter_sizes[0],
-                                    num_filters=num_filters[0],
-                                    conv_index=0)
-    print("\t\t-Convolutional 0: " + str(layer_conv0))
+    layer_conv_0 = tf.layers.conv2d(
+        inputs=images,
+        filters=num_filters[0],
+        kernel_size=filter_sizes[0],
+        use_bias=True,
+        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        trainable=True,
+        name="conv_0"
+    )
+    print("\t\t-Convolutional 0: " + str(layer_conv_0))
 
     #if for_training:
         #Apply batch normalisation after ReLU
-        #layer_conv0 = tf.layers.batch_normalization(layer_conv0, training=is_training)
+    #layer_conv0 = tf.layers.batch_normalization(layer_conv0, training=is_training)
 
     #layer 2 takes layer 1's output
-    layer_conv1 = new_conv_layer(   prev_layer=layer_conv0,
-                                    num_input_channels=num_filters[0],
-                                    filter_size=filter_sizes[1],
-                                    num_filters=num_filters[1],
-                                    conv_index=1)
-    print("\t\t-Convolutional 1: " + str(layer_conv1))
+    layer_conv_1 = tf.layers.conv2d(
+        inputs=layer_conv_0,
+        filters=num_filters[1],
+        kernel_size=filter_sizes[1],
+        use_bias=True,
+        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        trainable=True,
+        name="conv_1"
+    )
+    print("\t\t-Convolutional 1: " + str(layer_conv_1))
 
     #if for_training:
         #Apply batch normalisation after ReLU
-        #layer_conv1 = tf.layers.batch_normalization(layer_conv1, training=is_training)
+    #layer_conv1 = tf.layers.batch_normalization(layer_conv1, training=is_training)
 
     #Fully connected layers only take 2D tensors so above output must be
     #flattened from 4d
-    layer_flat, num_features = flatten_layer(layer_conv1)
+    num_features = (layer_conv_1.get_shape())[1:4].num_elements()
+    layer_flat = tf.reshape(layer_conv_1, [-1, num_features])
     print("\t\t-Flattener 0: " + str(layer_flat))
 
     #FULLY CONNECTED LAYERS
@@ -778,34 +661,46 @@ def new_graph(id,             #Unique identifier for saving the graph
     #multiply the weights with the inputs, then adding the biases. They then
     #apply a ReLU function before returning the layer. These weights and biases
     #are learned during execution
-    layer_fc0 = new_fc_layer(prev_layer=layer_flat,
-                             num_inputs=num_features,
-                             num_outputs=fc_sizes[0],
-                             final_fc_layer=False,
-                             fc_index=0)
-    print("\t\t-Fully connected 0: " + str(layer_fc0))
+    layer_fc_0 = tf.layers.dense(
+        inputs=layer_flat,    #Will be auto flattened
+        units=fc_sizes[0],
+        activation=tf.nn.relu,
+        use_bias=True,
+        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        trainable=True,
+        name="fc_0"
+    )
+    print("\t\t-Fully connected 0: " + str(layer_fc_0))
 
-    if for_training:
+    #if for_training:
         #Apply batch normalisation after ReLU
-        layer_fc0 = tf.layers.batch_normalization(layer_fc0, training=is_training)
+        #layer_fc_0 = tf.layers.batch_normalization(layer_fc_0, training=is_training)
 
-    layer_fc1 = new_fc_layer(prev_layer=layer_fc0,
-                             num_inputs=fc_sizes[0],
-                             num_outputs=fc_sizes[1],
-                             final_fc_layer=False,
-                             fc_index=1)
-    print("\t\t-Fully connected 1: " + str(layer_fc1))
+    layer_fc_1 = tf.layers.dense(
+        inputs=layer_fc_0,
+        units=fc_sizes[1],
+        activation=tf.nn.relu,
+        use_bias=True,
+        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        trainable=True,
+        name="fc_1"
+    )
+    print("\t\t-Fully connected 1: " + str(layer_fc_1))
 
-    if for_training:
+    #if for_training:
         #Apply batch normalisation after ReLU
-        layer_fc1 = tf.layers.batch_normalization(layer_fc1, training=is_training)
+        #layer_fc_1 = tf.layers.batch_normalization(layer_fc_1, training=is_training)
 
-    layer_fc2 = new_fc_layer(prev_layer=layer_fc1,
-                             num_inputs=fc_sizes[1],
-                             num_outputs=1,
-                             final_fc_layer=True,
-                             fc_index=2)
-    print("\t\t-Fully connected 2: " + str(layer_fc2))
+    layer_fc_2 = tf.layers.dense(
+        inputs=layer_fc_1,
+        units=1,
+        activation=None,
+        use_bias=True,
+        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        trainable=True,
+        name="fc_2"
+    )
+    print("\t\t-Fully connected 2: " + str(layer_fc_2))
 
     #PREDICTION DETAILS
     #Final fully connected layer suggests prediction (these structures are added to
@@ -813,32 +708,31 @@ def new_graph(id,             #Unique identifier for saving the graph
     print("\t*Prediction details:")
 
     #Softmax it to get a probability (Greater than 0.5 was used earlier to get
-    #prediction as a boolean, but this is Unsupported by Movidius ncsdk at this time)
-    prediction = tf.nn.sigmoid(layer_fc2, name='predictor')
+    #prediction as a boolean, but this is unsupported by Movidius ncsdk at this time)
+    prediction = tf.nn.sigmoid(layer_fc_2, name='predictor')
     print("\t\t-Class prediction: " + str(prediction))
 
-
+    #Backpropogation details only required when training
     if for_training:
-        #Backpropogation details
         print("\t*Backpropagation details:")
 
         #COST FUNCTION
         #Cost function is cross entropy (+ve and approaches zero as the model output
         #approaches the desired output
-        cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=layer_fc2,
+        cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=layer_fc_2,
                                                                 labels=labels,
                                                                 name='sigmoid_cross_entropy')
         print("\t\t-Cross entropy: " + str(cross_entropy))
-        cost = tf.reduce_mean(cross_entropy, name='loss')
-        print("\t\t-Loss (reduced mean cross entropy): " + str(cost))
+        loss = tf.reduce_mean(cross_entropy, name='loss')
+        print("\t\t-Loss (reduced mean cross entropy): " + str(loss))
 
         #OPTIMISATION FUNCTION
         #Optimisation function will have a decaying learning rate for bolder retuning
         #at the beginning of the trainig run
         global_step = tf.Variable(0, trainable=False)   #Incremented per batch
-        init_alpha = 0.1    #Ideally want to go down to 1e-4
-        decay_base = 0.95   #alpha = alpha*decay_base^(global_step/decay_steps)
-        decay_steps = 64    #With data set of 300000, this should get us to 0.0001
+        init_alpha = 0.001  #Ideally want to go down to 1e-4
+        decay_base = 0.99   #alpha = alpha*decay_base^(global_step/decay_steps)
+        decay_steps = 64    #With data set of 60000, this should get us to 0.0001
         alpha = tf.train.exponential_decay( init_alpha,
                                             global_step, decay_steps, decay_base,
                                             name='alpha')
@@ -851,8 +745,8 @@ def new_graph(id,             #Unique identifier for saving the graph
         extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(extra_update_ops):
             optimiser = (
-                tf.train.AdamOptimizer(learning_rate=alpha)
-                .minimize(cost, global_step=global_step)    #Decay learning rate
+                tf.train.AdamOptimizer(learning_rate=init_alpha)
+                .minimize(loss, global_step=global_step)    #Decay learning rate
                                                             #by incrementing global step
                                                             #once per batch
             )
