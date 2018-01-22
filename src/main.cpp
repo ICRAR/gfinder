@@ -51,7 +51,7 @@ const int INPUT_WIDTH = 32;
 const int INPUT_HEIGHT = 32;
 
 //Number of images to feed per batch (minibatch)
-const int BATCH_SIZE = 8;
+const int BATCH_SIZE = 128;
 
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //
@@ -667,27 +667,28 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
                 int limit_rect_w, int limit_rect_h,
                 int port_no)
 {
+  //Quick error check, not point traversing region too small for window
+  if(limit_rect_w < INPUT_WIDTH || limit_rect_h < INPUT_HEIGHT){
+    cout << "Error: defined region ("
+      << limit_rect_w << "x" << limit_rect_h
+      << ") is smaller than evaluation sliding window "
+      << "of dimensions (" << INPUT_WIDTH << "x" << INPUT_HEIGHT << ")\n";
+    return;
+  }
 
   //To evaluate, a sliding window over the image at the required components is
   //used to evalate on every possible region of the input image/component. Each
   //possible region is fed to the neural network graph to test if it holds a
   //galaxy. The result is crunched to find the area that most likely holds
   //a galaxy based on the results for nearby regions
-  int stride_x = 5;
-  int stride_y = 5;
-  int image_width = limit_rect_x + limit_rect_w;
-  int image_height = limit_rect_y + limit_rect_h;
+  int stride_x = 8;
+  int stride_y = 8;
 
   //For tracking progress
-  int cols_fed = 0;
-  int cols_expected = limit_rect_w/stride_x;
-  int rows_expected = limit_rect_h/stride_y;
+  int steps_x = floor((limit_rect_w - INPUT_WIDTH)/stride_x) + 1;
+  int steps_y = floor((limit_rect_h - INPUT_HEIGHT)/stride_y) + 1;
   int evaluation_units_fed = 0;
-  int evaluation_units_expected = cols_expected*rows_expected;
-
-  //Announce plan
-  cout << "Image will be fed in " << evaluation_units_expected
-    << " regions to " << graph_name << " network\n";
+  int units_per_component = steps_x*steps_y;
 
   //Set up a sockets
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -723,15 +724,22 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
 
     //Get function name from module depending on if validating or training
     PyObject* py_func;
-    //py_func = PyObject_GetAttrString(py_module, (char*)"use_evaluation_unit_on_cpu");
-    py_func = PyObject_GetAttrString(py_module, (char*)"run_evaluation_client");
+    py_func = PyObject_GetAttrString(py_module, (char*)"use_evaluation_unit_on_cpu");
+    //py_func = PyObject_GetAttrString(py_module, (char*)"run_evaluation_client");
     PyErr_Print();
 
     //Call function with the graph to train on and the port to listen for
     //training data on
-    PyObject_CallObject(py_func, Py_BuildValue("(s, i)",
+    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, i, i, i, i)",
       graph_name,
-      port_no
+      port_no,
+      limit_rect_w,
+      steps_x,
+      stride_x,
+      limit_rect_h,
+      steps_y,
+      stride_y,
+      (final_component_index - start_component_index + 1)
     ));
     PyErr_Print();
 
@@ -739,15 +747,21 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
     exit(EXIT_SUCCESS);
 
   }else if (pid > 0){
-    //Parent, wait for 1 python client to connect here
-    listen(sockfd, 1);
+    //Parent, wait for some python client to connect here
+    int clients_required = 1;
+    listen(sockfd, clients_required);
     socklen_t size = sizeof(server_addr);
     int server = accept(sockfd, (struct sockaddr *)&server_addr, &size);
     if(server < 0){
       cout << "Error: couldn't accept client connection\n";
     }else{
-      cout << "Evaluation client successfully connected, begin streaming decompressed data\n";
+      cout << clients_required << " evaluation client(s) successfully connected,"
+        << "begin streaming decompressed data\n";
     }
+
+    //Announce plan
+    cout << "Image will be fed in " << units_per_component
+      << " regions per component to '" << graph_name << "' network\n";
 
     //Decompress using a sliding window
     //spacial coordinates using kakadu decompressor
@@ -756,9 +770,11 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
     for(int c = start_component_index; c <= final_component_index; c++){
       //For consistency
       int component_index = c;
-      for(int x = limit_rect_x; x < image_width; x += stride_x){
-        for(int y = limit_rect_y; y < image_height; y += stride_y){
+      for(int x_win = 0; x_win < steps_x; x_win++){
+        for(int y_win = 0; y_win < steps_y; y_win++){
           //Construct a region from the label data
+          int x = limit_rect_x + x_win*stride_x;
+          int y = limit_rect_y + y_win*stride_y;
           kdu_dims region;
           region.access_pos()->set_x(x);
           region.access_size()->set_x(INPUT_WIDTH);
@@ -868,7 +884,6 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
           evaluation_units_fed++;
         }
         //If done a full line then increment into next column
-        cols_fed++;
       }
       //Outside of sliding window loops
     }

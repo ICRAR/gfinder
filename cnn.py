@@ -44,8 +44,8 @@ INPUT_NAME = "images"
 OUTPUT_NAME = "predictor"
 
 #Hardcoded image input dimensions
-WIDTH = 32
-HEIGHT = 32
+INPUT_WIDTH = 32
+INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 FILTER_SIZES    =   [5, 5]      #Convolutional layer filter sizes in pixels
@@ -83,8 +83,6 @@ def save_array_as_fig(img_array, name):
     plt.imshow( img_array, cmap="Greys_r", vmin=0, vmax=255,
                 interpolation='nearest')
 
-    global FILE_SUF
-
     fig.savefig("output/" + name)
 
     #Explicity close figure for memory usage
@@ -95,7 +93,7 @@ def save_array_as_fig(img_array, name):
 #such that it is compatible with the Movidius NCS architecture
 def make_compatible(image_data, save_image):
     #Reshape to placeholder dimensions
-    output = np.reshape(image_data, (WIDTH, HEIGHT))
+    output = np.reshape(image_data, (INPUT_WIDTH, INPUT_HEIGHT))
 
     #Cast to 8-bit unsigned integer
     output = np.uint8(output)
@@ -159,10 +157,10 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
         #When ready then recv
         ready = select.select([sock], [], [], timeout)
         if ready[0]:
-            #If WIDTH*HEIGHT*4 units are recieved then this is an image
-            image_bytes = sock.recv((WIDTH*HEIGHT)*4)
+            #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
+            image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
             image_input = byte_string_to_int_array(image_bytes)
-            if len(image_input) == WIDTH*HEIGHT:
+            if len(image_input) == INPUT_WIDTH*INPUT_HEIGHT:
                 #Make the image tensorflow graph compatible
                 image_batch.append(make_compatible(image_input, False))
             else:
@@ -279,9 +277,9 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
                                 "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_pos) if (batch_t_neg + batch_f_pos != 0) else 100)],
 
                                 ['SESSION',
-                                t_pos,
-                                f_pos,
-                                t_pos + f_pos,
+                                t_neg,
+                                f_neg,
+                                t_neg + f_neg,
                                 "{0:.4f}".format(100*t_neg/(t_neg + f_pos) if (t_neg + f_pos != 0) else 100)]
                             ])
             print(tableNse.draw())
@@ -323,21 +321,77 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
     #Close tensorflow session
     sess.close()
 
+#Helper to plot an evaluation probability map
+def plot_prob_map(prob_map):
+    #Save the probability map to output in 2d componetn slices
+    for f in range(prob_map.shape[2]):
+        fig = plt.figure("component-" + str(f), figsize=(15, 15), dpi=80)  #dims*dpi = res
+
+        #Bounds
+        w = prob_map.shape[0]
+        h = prob_map.shape[1]
+
+        #Plot
+        ax = plt.gca()
+        ax.set_aspect('equal', adjustable='box')    #Aspect ratio
+
+        ax.set_xticks(np.arange(0, w, math.floor(w/10)))  #Ticks
+        ax.set_xticks(np.arange(0, w, 1), minor = True)
+
+        ax.set_yticks(np.arange(0, h, math.floor(h/10)))
+        ax.set_yticks(np.arange(0, h, 1), minor = True)
+
+        #Colourisation mapped to [0,1], as this is a probability map
+        plt.imshow( prob_map[:,:,f], cmap="bone", vmin=0.0, vmax=1.0,
+                    interpolation='nearest')
+
+        #Label and save
+        fig.savefig("output/" + "component-" + str(f))
+
+        #Explicity close figure for memory usage
+        plt.close(fig)
+
 #Recieves a unit and evaluates it using the graph
-def use_evaluation_unit_on_cpu(graph_name, port):
+def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
+                                port,              #Port to stream from
+                                region_width,      #Width of region to evaluate
+                                steps_x,           #Samples to take in x axis
+                                stride_x,          #Pixels between samples
+                                region_height,     #Height of region to evaluate
+                                steps_y,           #Samples to take in y axis
+                                stride_y,          #Pixels between samples
+                                region_depth):     #Depth of region to evaluate
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-    timeout = 3         #Five second timeout
+    timeout = 1         #How many seconds to wait before finishing
 
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
-
     #Begin a tensorflow session
     sess = tf.Session()
-
     #Load the graph to be trained & keep the saver for later updating
     saver = restore_model(graph_name, sess)
+
+    #Data will need to be stored in a heat map - allocate memory for this
+    #data structure. Probability aggregate is the sum of each prediction made
+    #that includes that pixel. Samples are the number of predictions made for
+    #that pixel. This allows normalised probability map as output
+    prob_ag_map = np.zeros(
+        shape=(region_width, region_height, region_depth),
+        dtype=float
+    )
+    sample_map = np.zeros(
+        shape=(region_width, region_height, region_depth),
+        dtype=float #For later convienience
+    )
+
+    #Counters for ordered receiving of x,y,f
+    x_count = 0
+    y_count = 0
+    f_count = 0
+    count = 0
+    expected = steps_x*steps_y*region_depth
 
     #Load image data from socket while there is image data to load
     recieving = True
@@ -346,14 +400,15 @@ def use_evaluation_unit_on_cpu(graph_name, port):
         image_input = None
         ready = select.select([sock], [], [], timeout)
         if ready[0]:
-            #If WIDTH*HEIGHT*4 units are recieved then this is an image
-            image_bytes = sock.recv((WIDTH*HEIGHT)*4)
+            #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
+            image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
             image_input = byte_string_to_int_array(image_bytes)
-            if len(image_input) != WIDTH*HEIGHT or not image_input:
+            if len(image_input) != INPUT_WIDTH*INPUT_HEIGHT or not image_input:
                 #No data found in socket, stop recving
                 print("Error: image data not recv'd correctly, finishing early")
                 break
         else:
+            print("\r100.000% complete")
             print("No image data found in socket. Ending recv'ing loop")
             recieving = False
 
@@ -368,7 +423,46 @@ def use_evaluation_unit_on_cpu(graph_name, port):
 
             #Get the prediction
             pred = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0]
+            print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
             print(pred)
+
+            #Write information into heatmap. Likelihood is simply added onto
+            #heat map at each pixel
+            image_tlx = x_count*stride_x
+            image_brx = image_tlx + INPUT_WIDTH
+            image_tly = y_count*stride_y
+            image_bry = image_tly + INPUT_HEIGHT
+
+            prob_ag_map[image_tlx:image_brx,
+                        image_tly:image_bry,
+                        f_count] += pred
+            sample_map[image_tlx:image_brx,
+                        image_tly:image_bry,
+                        f_count] += 1.0
+
+            #Increment counters
+            count = count + 1
+            y_count = y_count + 1
+            if y_count == steps_y:
+                y_count = 0
+                x_count = x_count + 1
+            if x_count == steps_x:
+                x_count = 0
+                f_count = f_count + 1
+
+    #Announce progress
+    print("Normalising prediction map")
+
+    #Normalise the probability by dividing the aggregate prob by the amount
+    #of predictions/samples made at that pixel. Handle divide by zeroes which may
+    #occur along edges
+    prob_map = np.divide(   prob_ag_map, sample_map,
+                            out=np.zeros_like(prob_ag_map),
+                            where=sample_map!=0)
+
+    #Plot data or visualisation
+    print("Plotting 2D component prediction map(s)")
+    plot_prob_map(prob_map)
 
     #Close tensorflow session
     sess.close()
@@ -412,13 +506,21 @@ def compile_for_ncs(graph_name):
         "-in=" + INPUT_NAME,
         "-on=" + OUTPUT_NAME,
         "-o=" + GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph",
-        "-is", str(WIDTH), str(HEIGHT)
+        "-is", str(INPUT_WIDTH), str(INPUT_HEIGHT)
     ],
     stdout=open(os.devnull, 'wb')); #Suppress output
 
 #Boots up one NCS, loads a compiled version of the graph onto it and begins
 #running inferences on it. Supports inferencing a 3d area that must be supplied
-def run_evaluation_client(graph_name, port):
+def run_evaluation_client(  graph_name,        #Graph to evaluate on
+                            port,              #Port to stream from
+                            region_width,      #Width of region to evaluate
+                            steps_x,           #Samples to take in x axis
+                            stride_x,          #Pixels between samples
+                            region_height,     #Height of region to evaluate
+                            steps_y,           #Samples to take in y axis
+                            stride_y,          #Pixels between samples
+                            region_depth):     #Depth of region to evaluate
     #Compile a copy of the graph for the NCS architecture
     compile_for_ncs(graph_name)
 
@@ -483,10 +585,10 @@ def run_evaluation_client(graph_name, port):
                 image_input = None
                 ready = select.select([sock], [], [], timeout)
                 if ready[0]:
-                    #If WIDTH*HEIGHT*4 units are recieved then this is an image
-                    image_bytes = sock.recv((WIDTH*HEIGHT)*4)
+                    #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
+                    image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
                     image_input = byte_string_to_int_array(image_bytes)
-                    if len(image_input) != WIDTH*HEIGHT or not image_input:
+                    if len(image_input) != INPUT_WIDTH*INPUT_HEIGHT or not image_input:
                         #No data found in socket, stop recving
                         print("Error: image data not recv'd correctly, finishing early")
                         break
@@ -498,7 +600,7 @@ def run_evaluation_client(graph_name, port):
                 if recieving:
                     #Make the image graph compatible
                     image_input = make_compatible(image_input, True)
-                    eval_feed = np.reshape(image_input, (1, WIDTH, HEIGHT, 3))
+                    eval_feed = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
 
                     print("NCS:")
 
@@ -567,7 +669,7 @@ def plot_conv_weights(graph_name, scope):
 
             #Plot image
             ax.imshow(img, vmin=w_min, vmax=w_max,
-                      interpolation='nearest', cmap='PiYG')
+                      interpolation='nearest', cmap='bone')
 
         #Remove ticks from the plot.
         ax.set_xticks([])
@@ -589,7 +691,7 @@ def new_graph(id,             #Unique identifier for saving the graph
               for_training):  #The Movidius NCS' are picky and won't resolve unknown
                               #placeholders. For loading onto the NCS these, and other
                               #training structures (optimizer, dropout, batch normalisation)
-                              #all must go
+                              #all must go - only keep the inference structures
 
     #Create computational graph to represent the neural net:
     print("Creating new graph: '" + str(id) + "'")
@@ -599,11 +701,10 @@ def new_graph(id,             #Unique identifier for saving the graph
     #grayscale
     channels = 3
 
-    #INPUT
     #Placeholders serve as variable input to the graph (can be changed when run)
     #Following placeholder takes 30x30 grayscale images as tensors
     #(must be float32 for convolution and must be 4D for tensorflow)
-    images = tf.placeholder(tf.float32, shape=[None, WIDTH, HEIGHT, channels], name='images')
+    images = tf.placeholder(tf.float32, shape=[None, INPUT_WIDTH, INPUT_HEIGHT, channels], name='images')
     print("\t\t-Placeholder '" + images.name + "': " + str(images))
 
     if for_training:
@@ -613,7 +714,6 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Whether or not we are training (for batch normalisation)
         is_training = tf.placeholder(tf.bool, name='is_training')
 
-    #CONVOLUTIONAL LAYERS
     #These convolutional layers sequentially take inputs and create/apply filters
     #to these inputs to create outputs. They create weights and biases that will
     #be optimised during graph execution. They also down-sample (pool) the image
@@ -623,40 +723,45 @@ def new_graph(id,             #Unique identifier for saving the graph
         inputs=images,
         filters=num_filters[0],
         kernel_size=filter_sizes[0],
+        strides=1,
+        padding='SAME',
         use_bias=True,
         bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        activation=tf.nn.relu,
         trainable=True,
         name="conv_0"
     )
     print("\t\t-Convolutional 0: " + str(layer_conv_0))
 
-    #if for_training:
+    if for_training:
         #Apply batch normalisation after ReLU
-    #layer_conv0 = tf.layers.batch_normalization(layer_conv0, training=is_training)
+        layer_conv_0 = tf.layers.batch_normalization(layer_conv_0, training=is_training)
 
-    #layer 2 takes layer 1's output
+    #layer 2 takes layer 1's output and convs and pools it
     layer_conv_1 = tf.layers.conv2d(
         inputs=layer_conv_0,
         filters=num_filters[1],
         kernel_size=filter_sizes[1],
+        strides=1,
+        padding='SAME',
         use_bias=True,
         bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        activation=tf.nn.relu,
         trainable=True,
         name="conv_1"
     )
     print("\t\t-Convolutional 1: " + str(layer_conv_1))
 
-    #if for_training:
+    if for_training:
         #Apply batch normalisation after ReLU
-    #layer_conv1 = tf.layers.batch_normalization(layer_conv1, training=is_training)
+        layer_conv_1 = tf.layers.batch_normalization(layer_conv_1, training=is_training)
 
-    #Fully connected layers only take 2D tensors so above output must be
-    #flattened from 4d
+    #Fully connected layers only take 1D tensors so above output must be
+    #flattened from 4D to 1D
     num_features = (layer_conv_1.get_shape())[1:4].num_elements()
     layer_flat = tf.reshape(layer_conv_1, [-1, num_features])
     print("\t\t-Flattener 0: " + str(layer_flat))
 
-    #FULLY CONNECTED LAYERS
     #These fully connected layers create new weights and biases and matrix
     #multiply the weights with the inputs, then adding the biases. They then
     #apply a ReLU function before returning the layer. These weights and biases
@@ -672,10 +777,11 @@ def new_graph(id,             #Unique identifier for saving the graph
     )
     print("\t\t-Fully connected 0: " + str(layer_fc_0))
 
-    #if for_training:
+    if for_training:
         #Apply batch normalisation after ReLU
-        #layer_fc_0 = tf.layers.batch_normalization(layer_fc_0, training=is_training)
+        layer_fc_0 = tf.layers.batch_normalization(layer_fc_0, training=is_training)
 
+    #Layer 1 reduces layer 0's neurons
     layer_fc_1 = tf.layers.dense(
         inputs=layer_fc_0,
         units=fc_sizes[1],
@@ -687,10 +793,12 @@ def new_graph(id,             #Unique identifier for saving the graph
     )
     print("\t\t-Fully connected 1: " + str(layer_fc_1))
 
-    #if for_training:
+    if for_training:
         #Apply batch normalisation after ReLU
-        #layer_fc_1 = tf.layers.batch_normalization(layer_fc_1, training=is_training)
+        layer_fc_1 = tf.layers.batch_normalization(layer_fc_1, training=is_training)
 
+    #The final layer is a single neuron which will be run through a sigmoid to
+    #get a probability between 0 and 1
     layer_fc_2 = tf.layers.dense(
         inputs=layer_fc_1,
         units=1,
@@ -702,13 +810,10 @@ def new_graph(id,             #Unique identifier for saving the graph
     )
     print("\t\t-Fully connected 2: " + str(layer_fc_2))
 
-    #PREDICTION DETAILS
     #Final fully connected layer suggests prediction (these structures are added to
-    #collections for ease of access later on)
+    #collections for ease of access later on). Run final layer through a sigmoid
+    #to get prob between 0 and 1
     print("\t*Prediction details:")
-
-    #Softmax it to get a probability (Greater than 0.5 was used earlier to get
-    #prediction as a boolean, but this is unsupported by Movidius ncsdk at this time)
     prediction = tf.nn.sigmoid(layer_fc_2, name='predictor')
     print("\t\t-Class prediction: " + str(prediction))
 
@@ -716,27 +821,28 @@ def new_graph(id,             #Unique identifier for saving the graph
     if for_training:
         print("\t*Backpropagation details:")
 
-        #COST FUNCTION
-        #Cost function is cross entropy (+ve and approaches zero as the model output
+        #Cross entropy (+ve and approaches zero as the model output
         #approaches the desired output
-        cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=layer_fc_2,
-                                                                labels=labels,
-                                                                name='sigmoid_cross_entropy')
+        cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(
+            logits=layer_fc_2,
+            labels=labels,
+            name='sigmoid_cross_entropy'
+        )
         print("\t\t-Cross entropy: " + str(cross_entropy))
+
+        #Loss function is the mean of the cross entropy
         loss = tf.reduce_mean(cross_entropy, name='loss')
         print("\t\t-Loss (reduced mean cross entropy): " + str(loss))
 
-        #OPTIMISATION FUNCTION
-        #Optimisation function will have a decaying learning rate for bolder retuning
-        #at the beginning of the trainig run
+        #Decaying learning rate for bolder retuning
+        #at the beginning of the training run and more finessed tuning at end
         global_step = tf.Variable(0, trainable=False)   #Incremented per batch
         init_alpha = 0.001  #Ideally want to go down to 1e-4
         decay_base = 0.99   #alpha = alpha*decay_base^(global_step/decay_steps)
-        decay_steps = 64    #With data set of 60000, this should get us to 0.0001
+        decay_steps = 64
         alpha = tf.train.exponential_decay( init_alpha,
                                             global_step, decay_steps, decay_base,
                                             name='alpha')
-
         print("\t\t-Learning rate: " + str(alpha))
 
         #Optimisation function to Optimise cross entropy will be Adam optimizer
@@ -750,7 +856,6 @@ def new_graph(id,             #Unique identifier for saving the graph
                                                             #by incrementing global step
                                                             #once per batch
             )
-
         print("\t\t-Optimiser: " + str(optimiser.name))
 
 #Wraps the above to make a basic convolutional neural network for binary
