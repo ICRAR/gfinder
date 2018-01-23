@@ -49,11 +49,11 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [3, 3, 5, 5]
+FILTER_SIZES    =   [3, 5, 7]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 12, 16, 20]
+NUM_FILTERS     =   [6, 12, 18]
 #Number of neurons in fully connected (dense) layers
-FC_SIZES        =   [692, 384, 32]
+FC_SIZES        =   [384, 192, 32]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -714,7 +714,7 @@ def new_graph(id,             #Unique identifier for saving the graph
     if for_training:
         #and supervisory signals which are boolean (is or is not a galaxy)
         labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
-        print("\t\t" + '{:20s}'.format("-Label placeholder ") + " : " + str(images))
+        print("\t\t" + '{:20s}'.format("-Label placeholder ") + " : " + str(labels))
         #Whether or not we are training (for batch normalisation)
         is_training = tf.placeholder(tf.bool, name='is_training')
 
@@ -758,6 +758,7 @@ def new_graph(id,             #Unique identifier for saving the graph
 
 
         #Apply pooling
+        '''
         layer = tf.layers.average_pooling2d(
             inputs=layer,
             pool_size=2,
@@ -766,7 +767,7 @@ def new_graph(id,             #Unique identifier for saving the graph
             name="pooling_" + str(i)
         )
         print("\t\t" + '{:20s}'.format("-Average pooling ")  + str(i) + ": " + str(layer))
-
+        '''
 
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
