@@ -235,8 +235,9 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             #Redundant for clarity here
             batch_t_pos, batch_t_neg, batch_f_pos, batch_f_neg = 0, 0, 0, 0
             for i in range(len(image_batch)):
-                pred_gal = preds[i][0] > 0.5
-                is_gal = label_batch[i][0] == 1
+                pred_gal = preds[i][1] > 0.5    #Softmax over classes [NSE, GAL]
+                is_gal = label_batch[i][1] == 1 #One hot encoding
+                print(preds[i], label_batch[i])
 
                 #Count types of failure
                 if pred_gal and is_gal:
