@@ -49,12 +49,12 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [3]
+FILTER_SIZES    =   [5, 5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8]
+NUM_FILTERS     =   [8, 16]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
-FC_SIZES        =   [32]
+FC_SIZES        =   [1024, 128, 16]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
