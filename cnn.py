@@ -49,12 +49,12 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [7, 7, 7]
+FILTER_SIZES    =   [3, 5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 16, 32]
+NUM_FILTERS     =   [8, 36]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
-FC_SIZES        =   [1024, 384, 32]
+FC_SIZES        =   [384, 192, 64]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -536,8 +536,9 @@ def compile_for_ncs(graph_name):
         "-on=" + OUTPUT_NAME,
         "-o=" + GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph",
         "-is", str(INPUT_WIDTH), str(INPUT_HEIGHT)
-    ],
-    stdout=open(os.devnull, 'wb')); #Suppress output
+    ]
+    #,stdout=open(os.devnull, 'wb')  #Suppress output
+    );
 
 #Boots up one NCS, loads a compiled version of the graph onto it and begins
 #running inferences on it. Supports inferencing a 3d area that must be supplied
