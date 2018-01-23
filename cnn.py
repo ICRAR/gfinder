@@ -49,11 +49,11 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [3, 3, 3, 3, 3, 3]
+FILTER_SIZES    =   [5, 5, 5, 5, 5, 5, 5, 5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [16, 16, 16, 16, 36, 36]
-#Number of neurons in fully connected layer
-FC_SIZES        =   [384, 128, 48]
+NUM_FILTERS     =   [6, 6, 12, 12, 16, 16, 32, 32]
+#Number of neurons in fully connected (dense) layers
+FC_SIZES        =   [192, 64, 16]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -634,7 +634,7 @@ def run_evaluation_client(  graph_name,        #Graph to evaluate on
             print("Error: couldn't successfully fork a child for NCS " + str(d))
 
 #Plots the convolutional filter-weights/kernel for a given layer using matplotlib
-def plot_conv_weights(graph_name, scope):
+def plot_conv_weights(graph_name, scope, start_suffix, end_suffix):
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
 
@@ -645,39 +645,40 @@ def plot_conv_weights(graph_name, scope):
     saver = restore_model(graph_name, sess)
 
     #Get the weights
-    w = None
-    for v in tf.all_variables():
-        if v.name == scope + '/kernel:0':
-            w = sess.run(v)
+    for j in range(start_suffix, end_suffix + 1):
+        w = None
+        for v in tf.all_variables():
+            if v.name == scope + str(j) + '/kernel:0':
+                w = sess.run(v)
 
-    #Get the lowest and highest values for the weights to scale colour intensity
-    #across filters
-    w_min = np.min(w)
-    w_max = np.max(w)
+        #Get the lowest and highest values for the weights to scale colour intensity
+        #across filters
+        w_min = np.min(w)
+        w_max = np.max(w)
 
-    #Number of filters used in the conv. layer
-    num_filters = w.shape[3]
+        #Number of filters used in the conv. layer
+        num_filters = w.shape[3]
 
-    #Create figure with a grid of sub-plots (4xY)
-    fig, axes = plt.subplots(4, math.ceil(num_filters/4))
+        #Create figure with a grid of sub-plots (4xY)
+        fig, axes = plt.subplots(4, math.ceil(num_filters/4))
 
-    #Plot all the filter-weights.
-    for i, ax in enumerate(axes.flat):
-        #Only plot the valid filter-weights.
-        if i < num_filters:
-            #See new_conv_layer() for details on the format
-            #of this 4-dim tensor
-            img = w[:, :, 0, i] #Get first depth
+        #Plot all the filter-weights.
+        for i, ax in enumerate(axes.flat):
+            #Only plot the valid filter-weights.
+            if i < num_filters:
+                #See new_conv_layer() for details on the format
+                #of this 4-dim tensor
+                img = w[:, :, 0, i] #Get first depth
 
-            #Plot image
-            ax.imshow(img, vmin=w_min, vmax=w_max,
-                      interpolation='nearest', cmap='bone')
+                #Plot image
+                ax.imshow(img, vmin=w_min, vmax=w_max,
+                          interpolation='nearest', cmap='bone')
 
-        #Remove ticks from the plot.
-        ax.set_xticks([])
-        ax.set_yticks([])
+            #Remove ticks from the plot.
+            ax.set_xticks([])
+            ax.set_yticks([])
 
-    fig.savefig("output/" + scope + "_kernel")
+        fig.savefig("output/" + scope + str(j) + "_kernel")
 
     #Explicity close figure for memory usage
     plt.close(fig)
@@ -753,6 +754,15 @@ def new_graph(id,             #Unique identifier for saving the graph
                 name="conv_batch_norm_" + str(i)
             )
             print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
+
+        #Apply pooling
+        layer = tf.layers.average_pooling2d(
+            inputs=layer,
+            pool_size=2,
+            strides=1,
+            padding='SAME'
+        )
+        print("\t\t" + '{:20s}'.format("-Average pooling ")  + str(i) + ": " + str(layer))
 
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
