@@ -107,7 +107,7 @@ def make_compatible(image_data, save_image):
         save_array_as_fig(output, 'test')
 
     #Now cast
-    output = np.float16(output)/255
+    output = np.float16(output)/255.0
 
     #Add two more channels to get RBG
     output = np.dstack([output]*3)
@@ -349,7 +349,7 @@ def plot_prob_map(prob_map):
         ax.set_yticks(np.arange(0, h, 1), minor = True)
 
         #Colourisation mapped to [0,1], as this is a probability map
-        plt.imshow( prob_map[:,:,f], cmap="bone", vmin=0.85, vmax=1.0,
+        plt.imshow( prob_map[:,:,f], cmap="bone", vmin=0.0, vmax=1.0,
                     interpolation='nearest')
 
         #Label and save
@@ -757,12 +757,13 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         #Apply batch normalisation after ReLU, see this function's parameter comments
         #for why this is wrapped in a conditional
-        layer = tf.layers.batch_normalization(
-            inputs=layer,
-            training=is_training,
-            name="conv_batch_norm_" + str(i)
-        )
-        print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
+        if for_training:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=is_training,
+                name="conv_batch_norm_" + str(i)
+            )
+            print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
 
 
         #Apply pooling
@@ -801,12 +802,13 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         #Apply batch normalisation after ReLU, see this function's parameter comments
         #for why this is wrapped in a conditional]
-        layer = tf.layers.batch_normalization(
-            inputs=layer,
-            training=is_training,
-            name="dense_batch_norm_" + str(i)
-        )
-        print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
+        if for_training:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=is_training,
+                name="dense_batch_norm_" + str(i)
+            )
+            print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
 
     #The final layer is a neuron for each class
     layer = tf.layers.dense(
@@ -846,7 +848,7 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Decaying learning rate for bolder retuning
         #at the beginning of the training run and more finessed tuning at end
         global_step = tf.Variable(0, trainable=False)   #Incremented per batch
-        init_alpha = 0.0001 #Ideally want to go down to 1e-4
+        init_alpha = 0.00005
         decay_base = 1      #alpha = alpha*decay_base^(global_step/decay_steps)
         decay_steps = 64
         alpha = tf.train.exponential_decay( init_alpha,
