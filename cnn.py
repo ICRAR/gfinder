@@ -49,9 +49,9 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [5, 5, 5, 5, 5, 5, 5, 5]
+FILTER_SIZES    =   [3, 3, 5, 7, 9, 11]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [6, 6, 12, 12, 16, 16, 32, 32]
+NUM_FILTERS     =   [8, 16, 32, 32, 32, 32]
 #Number of neurons in fully connected (dense) layers
 FC_SIZES        =   [192, 64, 16]
 
@@ -839,8 +839,8 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Decaying learning rate for bolder retuning
         #at the beginning of the training run and more finessed tuning at end
         global_step = tf.Variable(0, trainable=False)   #Incremented per batch
-        init_alpha = 0.001  #Ideally want to go down to 1e-4
-        decay_base = 0.99   #alpha = alpha*decay_base^(global_step/decay_steps)
+        init_alpha = 0.0001 #Ideally want to go down to 1e-4
+        decay_base = 1      #alpha = alpha*decay_base^(global_step/decay_steps)
         decay_steps = 64
         alpha = tf.train.exponential_decay( init_alpha,
                                             global_step, decay_steps, decay_base,
