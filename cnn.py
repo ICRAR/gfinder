@@ -49,12 +49,12 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [5, 5, 5, 5]
+FILTER_SIZES    =   [7, 7, 7]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 12, 16, 20]
+NUM_FILTERS     =   [8, 16, 32]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
-FC_SIZES        =   [192, 64]
+FC_SIZES        =   [1024, 384, 32]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -82,11 +82,26 @@ def save_array_as_fig(img_array, name):
     #Create graph to ensure that block was read correctly
     fig = plt.figure(name, figsize=(15, 15), dpi=80)  #dims*dpi = res
 
-    #Constrain axis proportions and plot
-    plt.gca().set_aspect('equal', adjustable='box')
-    plt.imshow( img_array, cmap="Greys_r", vmin=0, vmax=1,
+    #Bounds
+    w = img_array.shape[0]
+    h = img_array.shape[1]
+
+    #Plot
+    ax = plt.gca()
+    ax.set_aspect('equal', adjustable='box')    #Aspect ratio
+
+    ax.set_xticks(np.arange(0, w, math.floor(w/10)))  #Ticks
+    ax.set_xticks(np.arange(0, w, 1), minor = True)
+
+    ax.set_yticks(np.arange(0, h, math.floor(h/10)))
+    ax.set_yticks(np.arange(0, h, 1), minor = True)
+
+    #Colourisation mapped to [0,255]
+    plt.imshow( np.uint8(img_array), cmap="Greys_r",
+                vmin=0, vmax=255,
                 interpolation='nearest')
 
+    #Label and save
     fig.savefig("output/" + name)
 
     #Explicity close figure for memory usage
@@ -108,6 +123,8 @@ def make_compatible(image_data, save_image):
 
     #Now cast
     output = np.float16(output)/255.0
+
+    print(output)
 
     #Add two more channels to get RBG
     output = np.dstack([output]*3)
@@ -359,15 +376,15 @@ def plot_prob_map(prob_map):
         plt.close(fig)
 
 #Recieves a unit and evaluates it using the graph
-def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
-                                port,              #Port to stream from
-                                region_width,      #Width of region to evaluate
-                                steps_x,           #Samples to take in x axis
-                                stride_x,          #Pixels between samples
-                                region_height,     #Height of region to evaluate
-                                steps_y,           #Samples to take in y axis
-                                stride_y,          #Pixels between samples
-                                region_depth):     #Depth of region to evaluate
+def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
+                                    port,              #Port to stream from
+                                    region_width,      #Width of region to evaluate
+                                    steps_x,           #Samples to take in x axis
+                                    stride_x,          #Pixels between samples
+                                    region_height,     #Height of region to evaluate
+                                    steps_y,           #Samples to take in y axis
+                                    stride_y,          #Pixels between samples
+                                    region_depth):     #Depth of region to evaluate
 
     sock = socket.socket()
     sock.connect(('', port))
@@ -386,8 +403,8 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
     writer.close()
 
     #Data will need to be stored in a heat map - allocate memory for this
-    #data structure. Probability aggregate is the sum of each prediction made
-    #that includes that pixel. Samples are the number of predictions made for
+    #data structure. Probability aggregate is the sum of each predictions made
+    #that include that pixel. Samples are the number of predictions made for
     #that pixel. This allows normalised probability map as output
     prob_ag_map = np.zeros(
         shape=(region_width, region_height, region_depth),
@@ -427,7 +444,7 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
         #If something was recieved from socket
         if recieving:
             #Make the image graph compatible
-            image_input = make_compatible(image_input, False)
+            image_input = make_compatible(image_input, True)
 
             #Create a unitary feeder dictionary
             feed_dict_eval = {  'images:0': [image_input],
@@ -435,8 +452,10 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
 
             #Get the prediction that it is a galaxy
             #(the 1th element of the one hot encoding)
-            pred = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0][1]
-            print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
+            output = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0]
+            pred = output[1]
+            print(output)
+            #print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
 
             #Write information into heatmap. Likelihood is simply added onto
             #heat map at each pixel
@@ -524,15 +543,15 @@ def compile_for_ncs(graph_name):
 
 #Boots up one NCS, loads a compiled version of the graph onto it and begins
 #running inferences on it. Supports inferencing a 3d area that must be supplied
-def run_evaluation_client(  graph_name,        #Graph to evaluate on
-                            port,              #Port to stream from
-                            region_width,      #Width of region to evaluate
-                            steps_x,           #Samples to take in x axis
-                            stride_x,          #Pixels between samples
-                            region_height,     #Height of region to evaluate
-                            steps_y,           #Samples to take in y axis
-                            stride_y,          #Pixels between samples
-                            region_depth):     #Depth of region to evaluate
+def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
+                                    port,              #Port to stream from
+                                    region_width,      #Width of region to evaluate
+                                    steps_x,           #Samples to take in x axis
+                                    stride_x,          #Pixels between samples
+                                    region_height,     #Height of region to evaluate
+                                    steps_y,           #Samples to take in y axis
+                                    stride_y,          #Pixels between samples
+                                    region_depth):     #Depth of region to evaluate
     #Compile a copy of the graph for the NCS architecture
     compile_for_ncs(graph_name)
 
@@ -552,6 +571,26 @@ def run_evaluation_client(  graph_name,        #Graph to evaluate on
         print("Forking " + str(len(device_list)) + " additional NCS management child")
     else:
         print("Forking " + str(len(device_list)) + " additional NCS management children")
+
+    #Data will need to be stored in a heat map - allocate memory for this
+    #data structure. Probability aggregate is the sum of each predictions made
+    #that include that pixel. Samples are the number of predictions made for
+    #that pixel. This allows normalised probability map as output
+    prob_ag_map = np.zeros(
+        shape=(region_width, region_height, region_depth),
+        dtype=float
+    )
+    sample_map = np.zeros(
+        shape=(region_width, region_height, region_depth),
+        dtype=float #For later convienience
+    )
+
+    #Counters for ordered receiving of x,y,f
+    x_count = 0
+    y_count = 0
+    f_count = 0
+    count = 0
+    expected = steps_x*steps_y*region_depth
 
     #Fork a child process for each available NCS
     for d in range(len(device_list)):
@@ -612,22 +651,18 @@ def run_evaluation_client(  graph_name,        #Graph to evaluate on
                 if recieving:
                     #Make the image graph compatible
                     image_input = make_compatible(image_input, True)
-                    eval_feed = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
-
-                    print("NCS:")
+                    #Explicitly make into '1' batch tensor
+                    image_input = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
 
                     #Get the graph's prediction
                     if graph_ref.LoadTensor(image_input, "image"):
                         #Get output of graph
                         output, userobj = graph_ref.GetResult()
-                        pred = output[0]
+
+                        #One hot encoding, want probability of class 1 (galaxy)
+                        pred = output[1]
+
                         print(output)
-                        if 0.5 < pred and pred <= 1:
-                            print("GALAXY (" + "{0:.4f}".format(pred*100) + "%)")
-                        elif 0 <= pred and pred <= 0.5:
-                            print("NOISE (" + "{0:.4f}".format((1 - pred)*100) + "%)")
-                        else:
-                            print("Error: '" + OUTPUT_NAME + "' output was invalid: " + str(pred))
                     else:
                         print("Error: cannot evaluate output of neural network, continuing")
                         continue
@@ -825,7 +860,7 @@ def new_graph(id,             #Unique identifier for saving the graph
     #Final fully connected layer suggests prediction (these structures are added to
     #collections for ease of access later on). This gets the most likely prediction
     print("\t*Prediction details:")
-    prediction = tf.argmax(tf.nn.softmax(layer, name='predictor'), axis=1)
+    prediction = tf.nn.softmax(layer, name='predictor')
     print("\t\t" + '{:20s}'.format("-Predictor") + " : " + str(prediction))
 
     #Backpropogation details only required when training

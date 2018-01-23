@@ -53,6 +53,23 @@ const int INPUT_HEIGHT = 32;
 //Number of images to feed per batch (minibatch)
 const int BATCH_SIZE = 32;
 
+//Global command line variables, use getopt to get the following arguments:
+char *JPX_FILEPATH    = NULL;
+bool IS_TRAIN         = false;
+bool IS_VALIDATE      = false;
+bool IS_EVALUATE      = false;
+char *GRAPH_NAME      = NULL;
+int START_COMPONENT_INDEX = 0;
+int FINAL_COMPONENT_INDEX = 0;
+int RESOLUTION_LEVEL  = -1;
+int LIMIT_RECT_X      = 0;
+int LIMIT_RECT_Y      = 0;
+int LIMIT_RECT_W      = 0;
+int LIMIT_RECT_H      = 0;
+int PORT_NO           = -1;
+bool NCS_EVALUATION   = false;
+
+
 //----------------------------------------------------------------------------//
 // Set up KDU messaging                                                       //
 //----------------------------------------------------------------------------//
@@ -99,9 +116,7 @@ struct label{
 //is taken as a refernce - this prevents a segmentation fault later when using
 //the jpx source with kakadu tools
 void load_labels_from_roid_container( jpx_source & jpx_src,
-                                      vector<label> & labels,
-                                      int start_component_index,
-                                      int final_component_index)
+                                      vector<label> & labels)
 {
   //Get a reference to the meta manager
   jpx_meta_manager meta_manager = jpx_src.access_meta_manager();
@@ -174,7 +189,7 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
           l.isGalaxy = true;
 
           //Only acknowledge if within component range (inclusive)
-          if(l.f >= start_component_index && l.f <= final_component_index){
+          if(l.f >= START_COMPONENT_INDEX && l.f <= FINAL_COMPONENT_INDEX){
             //"Your labels will make a fine addition to my ... collection"
             labels.push_back(l);
 
@@ -235,11 +250,9 @@ bool labels_intersect(label a, label b){
 }
 
 //Creates a set of false labels
-void generate_false_labels( vector<label> & labels, int start_component_index,
-                            int final_component_index)
-{
+void generate_false_labels( vector<label> & labels){
   //Range of components
-  int range = final_component_index - start_component_index + 1; //+1 because inclusive
+  int range = FINAL_COMPONENT_INDEX - START_COMPONENT_INDEX + 1; //+1 because inclusive
   //Required number of noise labels to be found
   int req = labels.size();
   //The width and height of galaxy labels
@@ -256,7 +269,7 @@ void generate_false_labels( vector<label> & labels, int start_component_index,
     //Go over every component and generate the required labels randomly from
     //areas that don't have a galaxy in them
     int noise_labels_generated = 0;
-    for(int i = start_component_index; i <= final_component_index; i++){
+    for(int i = START_COMPONENT_INDEX; i <= FINAL_COMPONENT_INDEX; i++){
       //If enough galaxies have been found then finish
       if(noise_labels_generated >= req){
         break;
@@ -443,11 +456,7 @@ void end_embedded_python(){
 
 //Called when training a graph is specified. Note a reference to the jpx source
 //is taken - this prevents segmentation fault (same with codestream)
-void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
-            kdu_thread_env & env,
-            int start_component_index, int final_component_index,
-            int resolution_level, bool update_model, int port_no)
-{
+void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env){
 
   //Set up a sockets
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -460,7 +469,7 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
   struct sockaddr_in server_addr;
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = htons(INADDR_ANY);
-  server_addr.sin_port = htons(port_no);
+  server_addr.sin_port = htons(PORT_NO);
 
   //Bind server to socket
   if((bind(sockfd, (struct sockaddr*)&server_addr,sizeof(server_addr))) < 0){
@@ -489,9 +498,9 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
     //Call function with the graph to train on and the port to listen for
     //training data on
     PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i)",
-      graph_name,
-      port_no,
-      (update_model ? 1 : 0),  //Whether or not to update graph
+      GRAPH_NAME,
+      PORT_NO,
+      (IS_TRAIN ? 1 : 0),  //Whether or not to update graph
       BATCH_SIZE,
       labels.size()
     ));
@@ -659,18 +668,11 @@ void train( vector<label> labels, kdu_codestream codestream, char *graph_name,
 }
 
 //Called when evaluating an image is specified
-void evaluate(  kdu_codestream codestream, char *graph_name,
-                kdu_thread_env & env,
-                int start_component_index, int final_component_index,
-                int resolution_level,
-                int limit_rect_x, int limit_rect_y,
-                int limit_rect_w, int limit_rect_h,
-                int port_no)
-{
+void evaluate(kdu_codestream codestream, kdu_thread_env & env){
   //Quick error check, not point traversing region too small for window
-  if(limit_rect_w < INPUT_WIDTH || limit_rect_h < INPUT_HEIGHT){
+  if(LIMIT_RECT_W < INPUT_WIDTH || LIMIT_RECT_H < INPUT_HEIGHT){
     cout << "Error: defined region ("
-      << limit_rect_w << "x" << limit_rect_h
+      << LIMIT_RECT_W << "x" << LIMIT_RECT_H
       << ") is smaller than evaluation sliding window "
       << "of dimensions (" << INPUT_WIDTH << "x" << INPUT_HEIGHT << ")\n";
     return;
@@ -685,8 +687,8 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
   int stride_y = 8;
 
   //For tracking progress
-  int steps_x = floor((limit_rect_w - INPUT_WIDTH)/stride_x) + 1;
-  int steps_y = floor((limit_rect_h - INPUT_HEIGHT)/stride_y) + 1;
+  int steps_x = floor((LIMIT_RECT_W - INPUT_WIDTH)/stride_x) + 1;
+  int steps_y = floor((LIMIT_RECT_H - INPUT_HEIGHT)/stride_y) + 1;
   int evaluation_units_fed = 0;
   int units_per_component = steps_x*steps_y;
 
@@ -701,7 +703,7 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
   struct sockaddr_in server_addr;
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = htons(INADDR_ANY);
-  server_addr.sin_port = htons(port_no);
+  server_addr.sin_port = htons(PORT_NO);
 
   //Bind server to socket
   if((bind(sockfd, (struct sockaddr*)&server_addr,sizeof(server_addr))) < 0){
@@ -724,22 +726,25 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
 
     //Get function name from module depending on if validating or training
     PyObject* py_func;
-    py_func = PyObject_GetAttrString(py_module, (char*)"use_evaluation_unit_on_cpu");
-    //py_func = PyObject_GetAttrString(py_module, (char*)"run_evaluation_client");
+    if(NCS_EVALUATION){
+      py_func = PyObject_GetAttrString(py_module, (char*)"run_evaluation_client_for_ncs");
+    }else{
+      py_func = PyObject_GetAttrString(py_module, (char*)"run_evaluation_client_for_cpu");
+    }
     PyErr_Print();
 
     //Call function with the graph to train on and the port to listen for
     //training data on
     PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, i, i, i, i)",
-      graph_name,
-      port_no,
-      limit_rect_w,
+      GRAPH_NAME,
+      PORT_NO,
+      LIMIT_RECT_W,
       steps_x,
       stride_x,
-      limit_rect_h,
+      LIMIT_RECT_H,
       steps_y,
       stride_y,
-      (final_component_index - start_component_index + 1)
+      (FINAL_COMPONENT_INDEX - START_COMPONENT_INDEX + 1)
     ));
     PyErr_Print();
 
@@ -761,20 +766,20 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
 
     //Announce plan
     cout << "Image will be fed in " << units_per_component
-      << " regions per component to '" << graph_name << "' network\n";
+      << " regions per component to '" << GRAPH_NAME << "' network\n";
 
     //Decompress using a sliding window
     //spacial coordinates using kakadu decompressor
     kdu_region_decompressor decompressor;
 
-    for(int c = start_component_index; c <= final_component_index; c++){
+    for(int c = START_COMPONENT_INDEX; c <= FINAL_COMPONENT_INDEX; c++){
       //For consistency
       int component_index = c;
       for(int x_win = 0; x_win < steps_x; x_win++){
         for(int y_win = 0; y_win < steps_y; y_win++){
           //Construct a region from the label data
-          int x = limit_rect_x + x_win*stride_x;
-          int y = limit_rect_y + y_win*stride_y;
+          int x = LIMIT_RECT_X + x_win*stride_x;
+          int y = LIMIT_RECT_Y + y_win*stride_y;
           kdu_dims region;
           region.access_pos()->set_x(x);
           region.access_size()->set_x(INPUT_WIDTH);
@@ -905,52 +910,110 @@ void evaluate(  kdu_codestream codestream, char *graph_name,
   }
 }
 
+//Called if 'h' or 'u' was called at the command line
+void print_usage(){
+  cout << "Usage: TODO\n";
+}
+
 //----------------------------------------------------------------------------//
 // Main                                                                       //
 //----------------------------------------------------------------------------//
 int main(int argc, char **argv){
-  //Use getopt to get the following arguments:
-  char *jpx_filepath    = NULL;
-  bool isTrain          = false;
-  bool isValidate       = false;
-  bool isEval           = false;
-  char *graph_name      = NULL;
-  char *component_range = NULL;
-  int resolution_level  = -1;
-  char *rect_string     = NULL;
-  int port_no           = -1;
-
   //For getopt
   int index;
   int arg;
 
   //Run getopt loop
-  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:")) != -1){
+  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:nuh")) != -1){
     switch(arg){
       case 'f': //Filepath to image
-        jpx_filepath = optarg;
+        JPX_FILEPATH = optarg;
         break;
       case 't': //Train?
-        isTrain = true;
+        IS_TRAIN = true;
         break;
       case 'v': //Validate?
-        isValidate = true;
+        IS_VALIDATE = true;
         break;
       case 'e': //Evaluate?
-        isEval = true;
-        rect_string = optarg; //When evaluating, the rectangle to use
-        break;
+        {
+          IS_EVALUATE = true;
+
+          //Parse rectangle as comma delimited string if evaluating
+          vector<int> limit_rect;
+          std::stringstream ss_limit_rect(optarg);
+          int limit_rect_args;
+          while(ss_limit_rect >> limit_rect_args){
+            limit_rect.push_back(limit_rect_args);
+            if(ss_limit_rect.peek() == ','){
+              ss_limit_rect.ignore();
+            }
+          }
+          //Error check rectangle values
+          //TODO
+          if(limit_rect.size() != 4){
+            //Should only be a start and end index (inclusive)
+            cout << "Error: limiting rectangle should be given in form 'x,y,w,h'\n";
+            return -1;
+          }
+
+          //Set globals
+          LIMIT_RECT_X = limit_rect[0];
+          LIMIT_RECT_Y = limit_rect[1];
+          LIMIT_RECT_W = limit_rect[2];
+          LIMIT_RECT_H = limit_rect[3];
+
+          break;
+        }
       case 'g': //Name of graph to use
-        graph_name = optarg;
+        GRAPH_NAME = optarg;
         break;
       case 'c': //Component range
-        component_range = optarg;
-        break;
+        {
+          //Parse component range as comma delimited string
+          vector<int> range;
+          std::stringstream ss_range(optarg);
+          int comps;
+          while(ss_range >> comps){
+            range.push_back(comps);
+            if(ss_range.peek() == ','){
+              ss_range.ignore();
+            }
+          }
+          //Error check component range
+          if(range.size() != 2){
+            //Should only be a start and end index (inclusive)
+            cout << "Error: inclusive component index range should be in the form 'a,b'\n";
+            return -1;
+          }
+          int start_component_index = range[0];
+          int final_component_index = range[1];
+          if(final_component_index < start_component_index){
+            cout << "Error: inclusive component index range's start index is after end index\n";
+            return -1;
+          }
+
+          //Set global vars
+          START_COMPONENT_INDEX = start_component_index;
+          FINAL_COMPONENT_INDEX = final_component_index;
+          break;
+        }
       case 'r': //Resolution level to use
-        resolution_level = atoi(optarg);  //Convert to int
+        RESOLUTION_LEVEL = atoi(optarg);  //Convert to int
         break;
       case 'p': //Port number to IPC on;
-        port_no = atoi(optarg);
+        PORT_NO = atoi(optarg);
+        break;
+      case 'n': //Whether or not to use a plugged in NCS (otherwise will use CPU)
+        NCS_EVALUATION = true;
+        break;
+      case 'u':
+        print_usage();
+        exit(EXIT_SUCCESS);
+        break;
+      case 'h':
+        print_usage();
+        exit(EXIT_SUCCESS);
         break;
       case '?':
         //getopt handles error print statements
@@ -966,64 +1029,12 @@ int main(int argc, char **argv){
 
   //Error check arguments
   int typeFlagCount = 0;
-  typeFlagCount += (isTrain) ? 1 : 0;
-  typeFlagCount += (isValidate) ? 1 : 0;
-  typeFlagCount += (isEval) ? 1 : 0;
+  typeFlagCount += (IS_TRAIN) ? 1 : 0;
+  typeFlagCount += (IS_VALIDATE) ? 1 : 0;
+  typeFlagCount += (IS_EVALUATE) ? 1 : 0;
   if(typeFlagCount != 1){
     cout << "Error: training, validation and evaluation sessions are mutally exclusive; please pick one option\n";
     return -1;
-  }
-
-  //Parse component range as comma delimited string
-  vector<int> range;
-  std::stringstream ss_range(component_range);
-  int comps;
-  while(ss_range >> comps){
-    range.push_back(comps);
-    if(ss_range.peek() == ','){
-      ss_range.ignore();
-    }
-  }
-  //Error check component range
-  if(range.size() != 2){
-    //Should only be a start and end index (inclusive)
-    cout << "Error: inclusive component index range should be in the form 'a,b'\n";
-    return -1;
-  }
-  int start_component_index = range[0];
-  int final_component_index = range[1];
-  if(final_component_index < start_component_index){
-    cout << "Error: inclusive component index range's start index is after end index\n";
-    return -1;
-  }
-
-  //Parse rectangle as comma delimited string if evaluating
-  int limit_rect_x = -1;
-  int limit_rect_y = -1;
-  int limit_rect_w = -1;
-  int limit_rect_h = -1;
-  if(isEval){
-    vector<int> limit_rect;
-    std::stringstream ss_limit_rect(rect_string);
-    int limit_rect_args;
-    while(ss_limit_rect >> limit_rect_args){
-      limit_rect.push_back(limit_rect_args);
-      if(ss_limit_rect.peek() == ','){
-        ss_limit_rect.ignore();
-      }
-    }
-    //Error check rectangle values
-    //TODO
-    if(limit_rect.size() != 4){
-      //Should only be a start and end index (inclusive)
-      cout << "Error: limiting rectangle should be given in form 'x,y,w,h'\n";
-      return -1;
-    }
-
-    limit_rect_x = limit_rect[0];
-    limit_rect_y = limit_rect[1];
-    limit_rect_w = limit_rect[2];
-    limit_rect_h = limit_rect[3];
   }
 
   //Announce KDU core version and prepare error output
@@ -1036,9 +1047,9 @@ int main(int argc, char **argv){
   init_embedded_python();
 
   //Create a jp2_family_src that takes a filepath as a parameter
-  cout << "Creating jp2 family source from file: '" << jpx_filepath << "'\n";
+  cout << "Creating jp2 family source from file: '" << JPX_FILEPATH << "'\n";
   jp2_family_src jp2_fam_src;
-  jp2_fam_src.open(jpx_filepath);
+  jp2_fam_src.open(JPX_FILEPATH);
 
   //Create jpx_source that can load an opened jp2_family_src
   cout << "Creating jpx source from jp2 family source\n";
@@ -1071,10 +1082,10 @@ int main(int argc, char **argv){
 
   //Check that the user specified components aren't out of range now that
   //codestream is initialised
-  if( codestream.get_num_components() - 1 < final_component_index
-      || start_component_index < 0){
-    cout << "Error: specified component range [" << start_component_index << ", "
-      << final_component_index << "] is outside of input file's component range [0, "
+  if( codestream.get_num_components() - 1 < FINAL_COMPONENT_INDEX
+      || START_COMPONENT_INDEX < 0){
+    cout << "Error: specified component range [" << START_COMPONENT_INDEX << ", "
+      << FINAL_COMPONENT_INDEX << "] is outside of input file's component range [0, "
       << codestream.get_num_components() - 1 << "], exiting\n";
       return -1;
   }
@@ -1087,37 +1098,28 @@ int main(int argc, char **argv){
   //Begin timing
 
   //Split on training/validation/evaluating
-  if(isTrain || isValidate){
+  if(IS_TRAIN || IS_VALIDATE){
     //Begin by getting labels in decompressor feedable format
     vector<label> labels;
-    load_labels_from_roid_container(jpx_src, labels,
-                                    start_component_index,
-                                    final_component_index);
+    load_labels_from_roid_container(jpx_src, labels);
     int num_true_labels = labels.size();
     cout << num_true_labels << " galaxy labels found in inclusive component range ["
-      << start_component_index << ", " << final_component_index << "]\n";
+      << START_COMPONENT_INDEX << ", " << FINAL_COMPONENT_INDEX << "]\n";
 
     //Now add some false labels. False labels won't be where a galaxy is spatially,
     //so get 100x100's that aren't in the galaxy components. Get as many false labels
     //as true labels
-    generate_false_labels(labels, start_component_index, final_component_index);
+    generate_false_labels(labels);
     cout << labels.size() - num_true_labels << " noise labels generated\n";
 
     //Note jpx_src required for metadata reads and codestream required for
     //image decompression. The final argument specifies if the model should
     //be update (which it should during training)
-    train(labels, codestream, graph_name, env,
-          start_component_index, final_component_index,
-          resolution_level, isTrain, port_no);
+    train(labels, codestream, env);
   }
-  if(isEval){
+  if(IS_EVALUATE){
     //Don't actually need any labels here, just get started
-    evaluate( codestream, graph_name, env,
-              start_component_index, final_component_index,
-              resolution_level,
-              limit_rect_x, limit_rect_y,
-              limit_rect_w, limit_rect_h,
-              port_no);
+    evaluate(codestream, env);
   }
 
   //Destroy references
