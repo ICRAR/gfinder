@@ -124,8 +124,6 @@ def make_compatible(image_data, save_image):
     #Now cast
     output = np.float16(output)/255.0
 
-    print(output)
-
     #Add two more channels to get RBG
     output = np.dstack([output]*3)
 
