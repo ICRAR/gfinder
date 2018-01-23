@@ -52,8 +52,9 @@ INPUT_HEIGHT = 32
 FILTER_SIZES    =   [5, 5, 5, 5]
 #Number of filters in each convolutional layer
 NUM_FILTERS     =   [8, 12, 16, 20]
-#Number of neurons in fully connected (dense) layers
-FC_SIZES        =   [192, 64, 1]
+#Number of neurons in fully connected (dense) layers. Final layer is added
+#on top of this
+FC_SIZES        =   [192, 64]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -184,7 +185,10 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
                 label_input = byte_string_to_int_array(label_bytes)
                 if len(label_input) == 1:
                     #Make the label tensorflow compatible
-                    label_batch.append(label_input[0])
+                    label_one_hot = [0, 0]
+                    #Label input is a tuple in a list, hence this monstrosity
+                    label_one_hot[label_input[0][0]] = 1
+                    label_batch.append(label_one_hot)
                 else:
                     #No data found in socket, stop recving
                     print("Error: label data not recv'd correctly, finishing early")
@@ -718,7 +722,7 @@ def new_graph(id,             #Unique identifier for saving the graph
 
     if for_training:
         #and supervisory signals which are boolean (is or is not a galaxy)
-        labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
+        labels = tf.placeholder(tf.float32, shape=[None, 2], name='labels')
         print("\t\t" + '{:20s}'.format("-Label placeholder ") + " : " + str(labels))
         #Whether or not we are training (for batch normalisation)
         is_training = tf.placeholder(tf.bool, name='is_training')
@@ -785,48 +789,43 @@ def new_graph(id,             #Unique identifier for saving the graph
         #multiply the weights with the inputs, then adding the biases. They then
         #apply a ReLU function before returning the layer. These weights and biases
         #are learned during execution
-        #Final layer doesn't have ReLU
-        if i != len(fc_sizes) - 1:
-            layer = tf.layers.dense(
-                inputs=layer,    #Will be auto flattened
-                units=fc_sizes[i],
-                activation=tf.nn.relu,
-                use_bias=True,
-                bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-                trainable=True,
-                name="dense_" + str(i)
-            )
-            print("\t\t" + '{:20s}'.format("-Dense ") + str(i) + ": " + str(layer))
+        layer = tf.layers.dense(
+            inputs=layer,    #Will be auto flattened
+            units=fc_sizes[i],
+            activation=tf.nn.relu,
+            use_bias=True,
+            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+            trainable=True,
+            name="dense_" + str(i)
+        )
+        print("\t\t" + '{:20s}'.format("-Dense ") + str(i) + ": " + str(layer))
 
-            #Apply batch normalisation after ReLU, see this function's parameter comments
-            #for why this is wrapped in a conditional
-            if for_training:
-                layer = tf.layers.batch_normalization(
-                    inputs=layer,
-                    training=is_training,
-                    name="dense_batch_norm_" + str(i)
-                )
-                print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
-
-        else:
-            #The final layer is a single neuron which will be run through a sigmoid to
-            #get a probability between 0 and 1
-            layer = tf.layers.dense(
+        #Apply batch normalisation after ReLU, see this function's parameter comments
+        #for why this is wrapped in a conditional
+        if for_training:
+            layer = tf.layers.batch_normalization(
                 inputs=layer,
-                units=1,
-                activation=None,
-                use_bias=True,
-                bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-                trainable=True,
-                name="dense_" + str(i)
+                training=is_training,
+                name="dense_batch_norm_" + str(i)
             )
-            print("\t\t" + '{:20s}'.format("-Dense (final)") + str(i) + ": " + str(layer))
+            print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
+
+    #The final layer is a neuron for each class
+    layer = tf.layers.dense(
+        inputs=layer,
+        units=2,
+        activation=None,    #Note no ReLU
+        use_bias=True,
+        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        trainable=True,
+        name="dense_final"
+    )
+    print("\t\t" + '{:20s}'.format("-Dense (final)") + " : " + str(layer))
 
     #Final fully connected layer suggests prediction (these structures are added to
-    #collections for ease of access later on). Run final layer through a sigmoid
-    #to get prob between 0 and 1
+    #collections for ease of access later on). This gets the most likely prediction
     print("\t*Prediction details:")
-    prediction = tf.nn.sigmoid(layer, name='predictor')
+    prediction = tf.argmax(tf.nn.softmax(layer, name='predictor'))
     print("\t\t" + '{:20s}'.format("-Predictor") + " : " + str(prediction))
 
     #Backpropogation details only required when training
@@ -835,7 +834,7 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         #Cross entropy (+ve and approaches zero as the model output
         #approaches the desired output
-        cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(
+        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
             logits=layer,
             labels=labels,
             name='sigmoid_cross_entropy'
