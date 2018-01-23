@@ -49,9 +49,9 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   []
+FILTER_SIZES    =   [3]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   []
+NUM_FILTERS     =   [8]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
 FC_SIZES        =   [32]
@@ -551,8 +551,6 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                                     steps_y,           #Samples to take in y axis
                                     stride_y,          #Pixels between samples
                                     region_depth):     #Depth of region to evaluate
-    #Compile a copy of the graph for the NCS architecture
-    compile_for_ncs(graph_name)
 
     #Load the compiled graph
     graph_file = None;
@@ -667,10 +665,10 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                         continue
 
             #Finished recieving, deallocate the graph from the device
-            graph_ref.DeallocateGraph()
+            #graph_ref.DeallocateGraph()
 
             #Close opened device
-            device.CloseDevice()
+            #device.CloseDevice()
 
             #Kill child
             sys.exit()
@@ -783,7 +781,7 @@ def new_graph(id,             #Unique identifier for saving the graph
             padding='SAME',
             use_bias=True,
             bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-            activation=tf.nn.relu,
+            activation=None,
             trainable=True,
             name="conv_" + str(i)
         )
@@ -816,7 +814,7 @@ def new_graph(id,             #Unique identifier for saving the graph
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
     num_features = (layer.get_shape())[1:4].num_elements()
-    layer = tf.reshape(layer, [-1, num_features])
+    layer = tf.reshape(layer, [-1, num_features], name="flattener")
     print("\t\t" + '{:20s}'.format("-Flattener ")  + " : " + str(layer))
 
     for i in range(len(fc_sizes)):
