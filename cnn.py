@@ -48,9 +48,12 @@ INPUT_WIDTH = 32
 INPUT_HEIGHT = 32
 
 #Globals for creating graphs
-FILTER_SIZES    =   [5, 5]      #Convolutional layer filter sizes in pixels
-NUM_FILTERS     =   [16, 32]     #Number of filters in each Convolutional layer
-FC_SIZES        =   [384, 64]   #Number of neurons in fully connected layer
+#Convolutional layer filter sizes in pixels
+FILTER_SIZES    =   [3, 3, 3, 3, 3, 3]
+#Number of filters in each convolutional layer
+NUM_FILTERS     =   [16, 16, 16, 16, 36, 36]
+#Number of neurons in fully connected layer
+FC_SIZES        =   [384, 128, 48]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -234,11 +237,13 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             batch_num = batch_num + 1
 
             #Print running results
-            print("\t-units = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.4f}".format(100*units_num/total_units) + "% of units fed)")
+            print("-units     = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.4f}".format(100*units_num/total_units) + "% of units fed)")
             #Prints current learning rate
-            print("\t-alpha = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
+            print("-alpha     = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
+            #Prints currento sigmoid cross entropy
+            print("-entropy   = " + str(sess.run('sigmoid_cross_entropy:0', feed_dict=feed_dict)))
             #Prints current loss
-            print("\t-loss  = " + str(sess.run('loss:0', feed_dict=feed_dict)))
+            print("-loss      = " + str(sess.run('loss:0', feed_dict=feed_dict)))
 
             #Print tabulated gal data
             tableGal = Texttable()
@@ -415,7 +420,7 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
         #If something was recieved from socket
         if recieving:
             #Make the image graph compatible
-            image_input = make_compatible(image_input, True)
+            image_input = make_compatible(image_input, False)
 
             #Create a unitary feeder dictionary
             feed_dict_eval = {  'images:0': [image_input],
@@ -424,7 +429,6 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
             #Get the prediction
             pred = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0]
             print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
-            print(pred)
 
             #Write information into heatmap. Likelihood is simply added onto
             #heat map at each pixel
@@ -705,117 +709,107 @@ def new_graph(id,             #Unique identifier for saving the graph
     #Following placeholder takes 30x30 grayscale images as tensors
     #(must be float32 for convolution and must be 4D for tensorflow)
     images = tf.placeholder(tf.float32, shape=[None, INPUT_WIDTH, INPUT_HEIGHT, channels], name='images')
-    print("\t\t-Placeholder '" + images.name + "': " + str(images))
+    print("\t\t" + '{:20s}'.format("-Image placeholder ") + " : " + str(images))
 
     if for_training:
         #and supervisory signals which are boolean (is or is not a galaxy)
         labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
-        print("\t\t-Placeholder '" + labels.name + "': " + str(labels))
+        print("\t\t" + '{:20s}'.format("-Label placeholder ") + " : " + str(images))
         #Whether or not we are training (for batch normalisation)
         is_training = tf.placeholder(tf.bool, name='is_training')
 
-    #These convolutional layers sequentially take inputs and create/apply filters
-    #to these inputs to create outputs. They create weights and biases that will
-    #be optimised during graph execution. They also down-sample (pool) the image
-    #after doing so. Filters are created in accordance with the arguments to this
-    #function
-    layer_conv_0 = tf.layers.conv2d(
-        inputs=images,
-        filters=num_filters[0],
-        kernel_size=filter_sizes[0],
-        strides=1,
-        padding='SAME',
-        use_bias=True,
-        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-        activation=tf.nn.relu,
-        trainable=True,
-        name="conv_0"
-    )
-    print("\t\t-Convolutional 0: " + str(layer_conv_0))
+    #This layer will be transformed along the way
+    layer = images
 
-    if for_training:
-        #Apply batch normalisation after ReLU
-        layer_conv_0 = tf.layers.batch_normalization(layer_conv_0, training=is_training)
+    #Create as many convolution layers as required if valid
+    if len(num_filters) != len(filter_sizes):
+        print("Error: " + str(len(num_filters)) + " filters requested but only " + str(len(filter_sizes)) + " sizes given")
+        return
 
-    #layer 2 takes layer 1's output and convs and pools it
-    layer_conv_1 = tf.layers.conv2d(
-        inputs=layer_conv_0,
-        filters=num_filters[1],
-        kernel_size=filter_sizes[1],
-        strides=1,
-        padding='SAME',
-        use_bias=True,
-        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-        activation=tf.nn.relu,
-        trainable=True,
-        name="conv_1"
-    )
-    print("\t\t-Convolutional 1: " + str(layer_conv_1))
+    for i in range(len(num_filters)):
+        #These convolutional layers sequentially take inputs and create/apply filters
+        #to these inputs to create outputs. They create weights and biases that will
+        #be optimised during graph execution. They also down-sample (pool) the image
+        #after doing so. Filters are created in accordance with the arguments to this
+        #function
+        layer = tf.layers.conv2d(
+            inputs=layer,
+            filters=num_filters[i],
+            kernel_size=filter_sizes[i],
+            strides=1,
+            padding='SAME',
+            use_bias=True,
+            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+            activation=tf.nn.relu,
+            trainable=True,
+            name="conv_" + str(i)
+        )
+        print("\t\t" + '{:20s}'.format("-Convolutional ") + str(i) + ": " + str(layer))
 
-    if for_training:
-        #Apply batch normalisation after ReLU
-        layer_conv_1 = tf.layers.batch_normalization(layer_conv_1, training=is_training)
+        #Apply batch normalisation after ReLU, see this function's parameter comments
+        #for why this is wrapped in a conditional
+        if for_training:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=is_training,
+                name="conv_batch_norm_" + str(i)
+            )
+            print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
 
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
-    num_features = (layer_conv_1.get_shape())[1:4].num_elements()
-    layer_flat = tf.reshape(layer_conv_1, [-1, num_features])
-    print("\t\t-Flattener 0: " + str(layer_flat))
+    num_features = (layer.get_shape())[1:4].num_elements()
+    layer = tf.reshape(layer, [-1, num_features])
+    print("\t\t" + '{:20s}'.format("-Flattener ")  + " : " + str(layer))
 
-    #These fully connected layers create new weights and biases and matrix
-    #multiply the weights with the inputs, then adding the biases. They then
-    #apply a ReLU function before returning the layer. These weights and biases
-    #are learned during execution
-    layer_fc_0 = tf.layers.dense(
-        inputs=layer_flat,    #Will be auto flattened
-        units=fc_sizes[0],
-        activation=tf.nn.relu,
-        use_bias=True,
-        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-        trainable=True,
-        name="fc_0"
-    )
-    print("\t\t-Fully connected 0: " + str(layer_fc_0))
+    for i in range(len(fc_sizes)):
+        #These fully connected layers create new weights and biases and matrix
+        #multiply the weights with the inputs, then adding the biases. They then
+        #apply a ReLU function before returning the layer. These weights and biases
+        #are learned during execution
+        #Final layer doesn't have ReLU
+        if i != len(fc_sizes) - 1:
+            layer = tf.layers.dense(
+                inputs=layer,    #Will be auto flattened
+                units=fc_sizes[0],
+                activation=tf.nn.relu,
+                use_bias=True,
+                bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+                trainable=True,
+                name="dense_" + str(i)
+            )
+            print("\t\t" + '{:20s}'.format("-Dense ") + str(i) + ": " + str(layer))
 
-    if for_training:
-        #Apply batch normalisation after ReLU
-        layer_fc_0 = tf.layers.batch_normalization(layer_fc_0, training=is_training)
+            #Apply batch normalisation after ReLU, see this function's parameter comments
+            #for why this is wrapped in a conditional
+            if for_training:
+                layer = tf.layers.batch_normalization(
+                    inputs=layer,
+                    training=is_training,
+                    name="dense_batch_norm_" + str(i)
+                )
+                print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
 
-    #Layer 1 reduces layer 0's neurons
-    layer_fc_1 = tf.layers.dense(
-        inputs=layer_fc_0,
-        units=fc_sizes[1],
-        activation=tf.nn.relu,
-        use_bias=True,
-        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-        trainable=True,
-        name="fc_1"
-    )
-    print("\t\t-Fully connected 1: " + str(layer_fc_1))
-
-    if for_training:
-        #Apply batch normalisation after ReLU
-        layer_fc_1 = tf.layers.batch_normalization(layer_fc_1, training=is_training)
-
-    #The final layer is a single neuron which will be run through a sigmoid to
-    #get a probability between 0 and 1
-    layer_fc_2 = tf.layers.dense(
-        inputs=layer_fc_1,
-        units=1,
-        activation=None,
-        use_bias=True,
-        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-        trainable=True,
-        name="fc_2"
-    )
-    print("\t\t-Fully connected 2: " + str(layer_fc_2))
+        else:
+            #The final layer is a single neuron which will be run through a sigmoid to
+            #get a probability between 0 and 1
+            layer = tf.layers.dense(
+                inputs=layer,
+                units=1,
+                activation=None,
+                use_bias=True,
+                bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+                trainable=True,
+                name="dense_" + str(i)
+            )
+            print("\t\t" + '{:20s}'.format("-Dense (final)") + str(i) + ": " + str(layer))
 
     #Final fully connected layer suggests prediction (these structures are added to
     #collections for ease of access later on). Run final layer through a sigmoid
     #to get prob between 0 and 1
     print("\t*Prediction details:")
-    prediction = tf.nn.sigmoid(layer_fc_2, name='predictor')
-    print("\t\t-Class prediction: " + str(prediction))
+    prediction = tf.nn.sigmoid(layer, name='predictor')
+    print("\t\t" + '{:20s}'.format("-Predictor") + " : " + str(prediction))
 
     #Backpropogation details only required when training
     if for_training:
@@ -824,15 +818,15 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Cross entropy (+ve and approaches zero as the model output
         #approaches the desired output
         cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(
-            logits=layer_fc_2,
+            logits=layer,
             labels=labels,
             name='sigmoid_cross_entropy'
         )
-        print("\t\t-Cross entropy: " + str(cross_entropy))
+        print("\t\t" + '{:20s}'.format("-Cross entropy") + " : " + str(cross_entropy))
 
         #Loss function is the mean of the cross entropy
         loss = tf.reduce_mean(cross_entropy, name='loss')
-        print("\t\t-Loss (reduced mean cross entropy): " + str(loss))
+        print("\t\t" + '{:20s}'.format("-Loss function") + " : " + str(loss))
 
         #Decaying learning rate for bolder retuning
         #at the beginning of the training run and more finessed tuning at end
@@ -843,7 +837,8 @@ def new_graph(id,             #Unique identifier for saving the graph
         alpha = tf.train.exponential_decay( init_alpha,
                                             global_step, decay_steps, decay_base,
                                             name='alpha')
-        print("\t\t-Learning rate: " + str(alpha))
+        print("\t\t" + '{:20s}'.format("-Learning rate") + " : " + str(alpha), end="")
+        print(" (" + str(init_alpha) + "*" + str(decay_base) + "^(batch_no/" + str(decay_steps) + ")")
 
         #Optimisation function to Optimise cross entropy will be Adam optimizer
         #(advanced gradient descent)
@@ -856,7 +851,7 @@ def new_graph(id,             #Unique identifier for saving the graph
                                                             #by incrementing global step
                                                             #once per batch
             )
-        print("\t\t-Optimiser: " + str(optimiser.name))
+        print("\t\t" + '{:20s}'.format("-Optimiser") + " : " + str(optimiser.name))
 
 #Wraps the above to make a basic convolutional neural network for binary
 #image classification
