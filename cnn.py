@@ -240,8 +240,6 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             print("-units     = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.4f}".format(100*units_num/total_units) + "% of units fed)")
             #Prints current learning rate
             print("-alpha     = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
-            #Prints currento sigmoid cross entropy
-            print("-entropy   = " + str(sess.run('sigmoid_cross_entropy:0', feed_dict=feed_dict)))
             #Prints current loss
             print("-loss      = " + str(sess.run('loss:0', feed_dict=feed_dict)))
 
