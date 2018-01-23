@@ -433,9 +433,9 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
             feed_dict_eval = {  'images:0': [image_input],
                                 'is_training:0': False}
 
-            #Get the prediction
-            pred = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0]
-            #print(pred)
+            #Get the prediction that it is a galaxy
+            #(the 1th element of the one hot encoding)
+            pred = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0][1]
             print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
 
             #Write information into heatmap. Likelihood is simply added onto
@@ -757,13 +757,12 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         #Apply batch normalisation after ReLU, see this function's parameter comments
         #for why this is wrapped in a conditional
-        if for_training:
-            layer = tf.layers.batch_normalization(
-                inputs=layer,
-                training=is_training,
-                name="conv_batch_norm_" + str(i)
-            )
-            print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
+        layer = tf.layers.batch_normalization(
+            inputs=layer,
+            training=is_training,
+            name="conv_batch_norm_" + str(i)
+        )
+        print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
 
 
         #Apply pooling
@@ -801,14 +800,13 @@ def new_graph(id,             #Unique identifier for saving the graph
         print("\t\t" + '{:20s}'.format("-Dense ") + str(i) + ": " + str(layer))
 
         #Apply batch normalisation after ReLU, see this function's parameter comments
-        #for why this is wrapped in a conditional
-        if for_training:
-            layer = tf.layers.batch_normalization(
-                inputs=layer,
-                training=is_training,
-                name="dense_batch_norm_" + str(i)
-            )
-            print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
+        #for why this is wrapped in a conditional]
+        layer = tf.layers.batch_normalization(
+            inputs=layer,
+            training=is_training,
+            name="dense_batch_norm_" + str(i)
+        )
+        print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
 
     #The final layer is a neuron for each class
     layer = tf.layers.dense(
@@ -825,7 +823,7 @@ def new_graph(id,             #Unique identifier for saving the graph
     #Final fully connected layer suggests prediction (these structures are added to
     #collections for ease of access later on). This gets the most likely prediction
     print("\t*Prediction details:")
-    prediction = tf.argmax(tf.nn.softmax(layer, name='predictor'))
+    prediction = tf.argmax(tf.nn.softmax(layer, name='predictor'), axis=1)
     print("\t\t" + '{:20s}'.format("-Predictor") + " : " + str(prediction))
 
     #Backpropogation details only required when training
