@@ -49,11 +49,11 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [3, 5, 7]
+FILTER_SIZES    =   [5, 5, 5, 5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [6, 12, 18]
+NUM_FILTERS     =   [8, 12, 16, 20]
 #Number of neurons in fully connected (dense) layers
-FC_SIZES        =   [384, 192, 32]
+FC_SIZES        =   [192, 64, 1]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -364,6 +364,7 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
                                 steps_y,           #Samples to take in y axis
                                 stride_y,          #Pixels between samples
                                 region_depth):     #Depth of region to evaluate
+
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
@@ -375,6 +376,10 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
     sess = tf.Session()
     #Load the graph to be trained & keep the saver for later updating
     saver = restore_model(graph_name, sess)
+
+    #Print a picture to put on the tensorboard fridge
+    writer = tf.summary.FileWriter('logs', sess.graph)
+    writer.close()
 
     #Data will need to be stored in a heat map - allocate memory for this
     #data structure. Probability aggregate is the sum of each prediction made
@@ -784,7 +789,7 @@ def new_graph(id,             #Unique identifier for saving the graph
         if i != len(fc_sizes) - 1:
             layer = tf.layers.dense(
                 inputs=layer,    #Will be auto flattened
-                units=fc_sizes[0],
+                units=fc_sizes[i],
                 activation=tf.nn.relu,
                 use_bias=True,
                 bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
