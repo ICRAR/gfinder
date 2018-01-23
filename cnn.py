@@ -49,9 +49,9 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [3, 3, 5, 7, 9, 11]
+FILTER_SIZES    =   [3, 3, 3, 5, 5, 7]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 16, 32, 32, 32, 32]
+NUM_FILTERS     =   [8, 8, 16, 16, 24, 24]
 #Number of neurons in fully connected (dense) layers
 FC_SIZES        =   [192, 64, 16]
 
@@ -345,7 +345,7 @@ def plot_prob_map(prob_map):
         ax.set_yticks(np.arange(0, h, 1), minor = True)
 
         #Colourisation mapped to [0,1], as this is a probability map
-        plt.imshow( prob_map[:,:,f], cmap="bone", vmin=0.0, vmax=1.0,
+        plt.imshow( prob_map[:,:,f], cmap="bone", vmin=0.85, vmax=1.0,
                     interpolation='nearest')
 
         #Label and save
@@ -426,6 +426,7 @@ def use_evaluation_unit_on_cpu( graph_name,        #Graph to evaluate on
 
             #Get the prediction
             pred = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0]
+            #print(pred)
             print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
 
             #Write information into heatmap. Likelihood is simply added onto
