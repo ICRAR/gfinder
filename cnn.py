@@ -756,6 +756,7 @@ def new_graph(id,             #Unique identifier for saving the graph
             )
             print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
 
+        '''
         #Apply pooling
         layer = tf.layers.average_pooling2d(
             inputs=layer,
@@ -764,6 +765,7 @@ def new_graph(id,             #Unique identifier for saving the graph
             padding='SAME'
         )
         print("\t\t" + '{:20s}'.format("-Average pooling ")  + str(i) + ": " + str(layer))
+        '''
 
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
