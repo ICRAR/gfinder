@@ -84,7 +84,7 @@ def save_array_as_fig(img_array, name):
 
     #Constrain axis proportions and plot
     plt.gca().set_aspect('equal', adjustable='box')
-    plt.imshow( img_array, cmap="Greys_r", vmin=0, vmax=255,
+    plt.imshow( img_array, cmap="Greys_r", vmin=0, vmax=1,
                 interpolation='nearest')
 
     fig.savefig("output/" + name)
@@ -107,7 +107,7 @@ def make_compatible(image_data, save_image):
         save_array_as_fig(output, 'test')
 
     #Now cast
-    output = np.float16(output)
+    output = np.float16(output)/255
 
     #Add two more channels to get RBG
     output = np.dstack([output]*3)
