@@ -49,12 +49,12 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [3, 5]
+FILTER_SIZES    =   [5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 36]
+NUM_FILTERS     =   [16]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
-FC_SIZES        =   [384, 192, 64]
+FC_SIZES        =   [64, 32]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -237,24 +237,23 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             for i in range(len(image_batch)):
                 pred_gal = preds[i][1] > 0.5    #Softmax over classes [NSE, GAL]
                 is_gal = label_batch[i][1] == 1 #One hot encoding
-                print(preds[i], label_batch[i])
 
                 #Count types of failure
                 if pred_gal and is_gal:
-                    batch_t_pos = batch_t_pos + 1
+                    batch_t_pos += 1
                 elif pred_gal and not is_gal:
-                    batch_f_pos = batch_f_pos + 1
+                    batch_f_pos += 1
                 elif not pred_gal and is_gal:
-                    batch_f_neg = batch_f_neg + 1
+                    batch_f_neg += 1
                 elif not pred_gal and not is_gal:
-                    batch_t_neg = batch_t_neg + 1
+                    batch_t_neg += 1
 
             #Increment running totals
-            t_pos = t_pos + batch_t_pos
-            f_pos = f_pos + batch_f_pos
-            f_neg = f_neg + batch_f_neg
-            t_neg = t_neg + batch_t_neg
-            batch_num = batch_num + 1
+            t_pos += batch_t_pos
+            f_pos += batch_f_pos
+            f_neg += batch_f_neg
+            t_neg += batch_t_neg
+            batch_num += 1
 
             #Print running results
             print("-units     = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.4f}".format(100*units_num/total_units) + "% of units fed)")
@@ -792,6 +791,7 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         #Apply batch normalisation after ReLU, see this function's parameter comments
         #for why this is wrapped in a conditional
+        '''
         if for_training:
             layer = tf.layers.batch_normalization(
                 inputs=layer,
@@ -799,7 +799,7 @@ def new_graph(id,             #Unique identifier for saving the graph
                 name="conv_batch_norm_" + str(i)
             )
             print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
-
+        '''
 
         #Apply pooling
         '''
@@ -837,6 +837,7 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         #Apply batch normalisation after ReLU, see this function's parameter comments
         #for why this is wrapped in a conditional]
+        '''
         if for_training:
             layer = tf.layers.batch_normalization(
                 inputs=layer,
@@ -844,6 +845,7 @@ def new_graph(id,             #Unique identifier for saving the graph
                 name="dense_batch_norm_" + str(i)
             )
             print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
+        '''
 
     #The final layer is a neuron for each class
     layer = tf.layers.dense(
