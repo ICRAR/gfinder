@@ -49,9 +49,9 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [5, 5, 5, 5, 5, 5]
+FILTER_SIZES    =   [5, 5, 5, 5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 8, 16, 16, 24, 24]
+NUM_FILTERS     =   [8, 16, 24, 32]
 #Number of neurons in fully connected (dense) layers
 FC_SIZES        =   [192, 64, 16]
 
