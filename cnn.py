@@ -10,19 +10,20 @@ import os                           #For file reading and warning suppression
 if not hasattr(sys, 'argv'):
     sys.argv = ['']
 
-import shutil                       #For directory deletion
-import numpy as np                  #For transforming blocks
-import matplotlib.pyplot as plt     #For visualisation
-from texttable import Texttable     #For outputting
-import math                         #For logs
-import time                         #For debugging with catchup
-import subprocess                   #For compiling graphs
-import socket                       #For IPC
-import select                       #For waiting for socket to fill
-import errno                        #Handling socket errors
-import struct                       #For converting kdu_uint32s to uint32s
-import tensorflow as tf             #For deep learning
-from mvnc import mvncapi as mvnc    #For Movidius NCS API
+import shutil                               #For directory deletion
+import numpy as np                          #For transforming blocks
+import matplotlib.pyplot as plt             #For visualisation
+from texttable import Texttable             #For outputting
+import math                                 #For logs
+import time                                 #For debugging with catchup
+from datetime import datetime, timedelta    #For timing inference runs
+import subprocess                           #For compiling graphs
+import socket                               #For IPC
+import select                               #For waiting for socket to fill
+import errno                                #Handling socket errors
+import struct                               #For converting kdu_uint32s to uint32s
+import tensorflow as tf                     #For deep learning
+from mvnc import mvncapi as mvnc            #For Movidius NCS API
 
 #Set suppressed logging level for Movidius NCS API
 mvnc.SetGlobalOption(mvnc.GlobalOption.LOG_LEVEL, 1)
@@ -41,7 +42,8 @@ LOGS_FOLDER = "./logs"
 #Names of inputs and outputs in tensorflow graph (for compiling for NCS)
 #See 'new_graph' function for options
 INPUT_NAME = "images"
-OUTPUT_NAME = "predictor"
+OUTPUT_CPU_NAME = "dense_final/BiasAdd"
+OUTPUT_NCS_NAME = "dense_final/BiasAdd"
 
 #Hardcoded image input dimensions
 INPUT_WIDTH = 32
@@ -49,12 +51,12 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [5, 5]
+FILTER_SIZES    =   [5, 5, 5, 5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 16]
+NUM_FILTERS     =   [8, 12, 16, 20]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
-FC_SIZES        =   [1024, 128, 16]
+FC_SIZES        =   [2048, 256, 32]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -147,7 +149,7 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-    timeout = 3         #Three second timeout
+    timeout = 0.5       #Timeout before cutting recv'ing loop in seconds
 
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
@@ -220,9 +222,10 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
         batch_ready = len(image_batch) == batch_size and len(label_batch) == batch_size;
         if batch_ready or (not recieving and len(image_batch) != 0):
             #Turn recieved info into a feeder dictionary
-            feed_dict = {   'images:0': image_batch,
-                            'labels:0': label_batch,
-                            'is_training:0': (optimise_and_save == 1)}
+            feed_dict = {
+                            'images:0': image_batch,
+                            'labels:0': label_batch
+                        }
 
             #If training then train
             if optimise_and_save == 1:
@@ -274,13 +277,13 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
                                 batch_t_pos,
                                 batch_f_pos,
                                 batch_t_pos + batch_f_pos,
-                                "{0:.4f}".format(100*batch_t_pos/(batch_t_pos + batch_f_neg) if (batch_t_pos + batch_f_neg != 0) else 100)],
+                                "{0:.4f}".format(100*batch_t_pos/(batch_t_pos + batch_f_neg)) if (batch_t_pos + batch_f_neg != 0) else "-"],
 
                                 ['SESSION',
                                 t_pos,
                                 f_pos,
                                 t_pos + f_pos,
-                                "{0:.4f}".format(100*t_pos/(t_pos + f_neg) if (t_pos + f_neg != 0) else 100)]
+                                "{0:.4f}".format(100*t_pos/(t_pos + f_neg)) if (t_pos + f_neg != 0) else "-"]
                             ])
             print(tableGal.draw())
 
@@ -296,13 +299,13 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
                                 batch_t_neg,
                                 batch_f_neg,
                                 batch_t_neg + batch_f_neg,
-                                "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_pos) if (batch_t_neg + batch_f_pos != 0) else 100)],
+                                "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_pos)) if (batch_t_neg + batch_f_pos != 0) else "-"],
 
                                 ['SESSION',
                                 t_neg,
                                 f_neg,
                                 t_neg + f_neg,
-                                "{0:.4f}".format(100*t_neg/(t_neg + f_pos) if (t_neg + f_pos != 0) else 100)]
+                                "{0:.4f}".format(100*t_neg/(t_neg + f_pos)) if (t_neg + f_pos != 0) else "-"]
                             ])
             print(tableNse.draw())
 
@@ -342,6 +345,13 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
 
     #Close tensorflow session
     sess.close()
+
+#Softmax is considered a large typed operation on the ncs, so a version
+#has been implemented here
+def softmax(arr):
+    """Compute softmax values for each sets of scores in x."""
+    e_arr = np.exp(arr - np.max(arr))
+    return e_arr / e_arr.sum()
 
 #Helper to plot an evaluation probability map
 def plot_prob_map(prob_map):
@@ -387,14 +397,31 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-    timeout = 1         #How many seconds to wait before finishing
+    timeout = 0.5       #How many seconds to wait before finishing
 
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
-    #Begin a tensorflow session
+
+    #Create a graph for evaluation
+    new_graph(id=graph_name,        #Id/name
+              filter_sizes=FILTER_SIZES,  #Convolutional layer filter sizes in pixels
+              num_filters=NUM_FILTERS, #Number of filters in each Convolutional layer
+              fc_sizes=FC_SIZES,    #Number of neurons in fully connected layer
+              for_training=False)   #Gets rid of placeholders and training structures
+                                    #that aren't needed for NCS
+
+    #Use this to load in weights from trained graph
+    saver = tf.train.Saver(tf.global_variables())
+
+    #A session is required
     sess = tf.Session()
-    #Load the graph to be trained & keep the saver for later updating
-    saver = restore_model(graph_name, sess)
+
+    #Initialise no placeholder architecture
+    sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
+
+    #Load in weights from trained graph
+    saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
 
     #Print a picture to put on the tensorboard fridge
     writer = tf.summary.FileWriter('logs', sess.graph)
@@ -420,6 +447,9 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
     count = 0
     expected = steps_x*steps_y*region_depth
 
+    #Begin inference timer
+    inference_start = datetime.now()
+
     #Load image data from socket while there is image data to load
     recieving = True
     while recieving:
@@ -435,25 +465,26 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
                 print("Error: image data not recv'd correctly, finishing early")
                 break
         else:
-            print("\r100.000% complete")
+            #Announce finish and time taken (remove timeout)
+            inference_duration = datetime.now() - inference_start - timedelta(seconds=timeout)
+            print("\r100.000% complete (" + str(inference_duration) + ")")
             print("No image data found in socket. Ending recv'ing loop")
             recieving = False
 
         #If something was recieved from socket
         if recieving:
             #Make the image graph compatible
-            image_input = make_compatible(image_input, True)
+            image_input = make_compatible(image_input, False)
 
             #Create a unitary feeder dictionary
-            feed_dict_eval = {  'images:0': [image_input],
-                                'is_training:0': False}
+            feed_dict_eval = {  'images:0': [image_input]  }
 
             #Get the prediction that it is a galaxy
             #(the 1th element of the one hot encoding)
-            output = sess.run(OUTPUT_NAME + ':0', feed_dict=feed_dict_eval)[0]
-            pred = output[1]
-            print(output)
-            #print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
+            output = sess.run(OUTPUT_CPU_NAME + ':0', feed_dict=feed_dict_eval)[0]
+            pred = softmax(output)[1]
+            #print(pred)
+            print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
 
             #Write information into heatmap. Likelihood is simply added onto
             #heat map at each pixel
@@ -519,7 +550,7 @@ def compile_for_ncs(graph_name):
     sess.run(tf.local_variables_initializer())
 
     #Load in weights from trained graph
-    #saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
+    saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
 
     #Save without placeholders
     saver.save(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs")
@@ -528,12 +559,12 @@ def compile_for_ncs(graph_name):
     sess.close()
 
     #Compile graph with subprocess for NCS
-    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=predictor -o=./graphs/test-graph/test-graph-for-ncs.graph'
+    #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=dense_final/BiasAdd -o=./graphs/test-graph/test-graph-for-ncs.graph'
     subprocess.call([
         'mvNCCompile',
         (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.meta"),
         "-in=" + INPUT_NAME,
-        "-on=" + OUTPUT_NAME,
+        "-on=" + OUTPUT_NCS_NAME, #No predictor in eval graph because softmax broken
         "-o=" + GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph",
         "-is", str(INPUT_WIDTH), str(INPUT_HEIGHT)
     ]
@@ -552,22 +583,15 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                                     stride_y,          #Pixels between samples
                                     region_depth):     #Depth of region to evaluate
 
+    #Compile a copy of the evaluation graph for running on the ncs
+    compile_for_ncs(graph_name)
+
     #Load the compiled graph
     graph_file = None;
     filepath = GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph"
     with open(filepath, mode='rb') as f:
         #Read it in
         graph_file = f.read()
-
-    #Ensure there is at least one NCS
-    device_list = mvnc.EnumerateDevices()
-    if len(device_list) == 0:
-        print("Error: no NCS devices detected, exiting")
-        sys.exit()
-    elif len(device_list) == 1:
-        print("Forking " + str(len(device_list)) + " additional NCS management child")
-    else:
-        print("Forking " + str(len(device_list)) + " additional NCS management children")
 
     #Data will need to be stored in a heat map - allocate memory for this
     #data structure. Probability aggregate is the sum of each predictions made
@@ -589,12 +613,129 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
     count = 0
     expected = steps_x*steps_y*region_depth
 
+    #Ensure there is at least one NCS
+    device_list = mvnc.EnumerateDevices()
+    if len(device_list) == 0:
+        print("Error: no NCS devices detected, exiting")
+        sys.exit()
+    elif len(device_list) == 1:
+        print("Forking " + str(len(device_list)) + " additional NCS management child")
+    else:
+        print("Forking " + str(len(device_list)) + " additional NCS management children")
+
     #Fork a child process for each available NCS
     for d in range(len(device_list)):
         #Try to open an NCS for each child
         device = mvnc.Device(device_list[d])
         device.OpenDevice()
 
+        #Child, connect to socket
+        print("Connecting child evaluation process handling NCS:" + str(d) + " to port " + str(port))
+        sock = socket.socket()
+        sock.connect(('', port))
+        sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
+        timeout = 0.5       #How many seconds to wait before finishing
+
+        #Allocate the compiled graph onto the device and get a reference
+        #for later deallocation
+        graph_ref = device.AllocateGraph(graph_file)
+
+        #Announce about to enter reception loop
+        print("Process controlling NCS:" + str(d) + " entering reception loop")
+
+        #Begin inference timer
+        inference_start = datetime.now()
+
+        #Load image data from socket while there is image data to load
+        recieving = True
+        while recieving:
+            #When ready then recv
+            image_input = None
+            ready = select.select([sock], [], [], timeout)
+            if ready[0]:
+                #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
+                image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
+                image_input = byte_string_to_int_array(image_bytes)
+                if len(image_input) != INPUT_WIDTH*INPUT_HEIGHT or not image_input:
+                    #No data found in socket, stop recving
+                    print("Error: image data not recv'd correctly, finishing early")
+                    break
+            else:
+                #Announce finish and time taken (remove timeout)
+                inference_duration = datetime.now() - inference_start - timedelta(seconds=timeout)
+                print("\r100.000% complete (" + str(inference_duration) + ")")
+                print("No image data found in socket. Closing NCS:" + str(d) + " and its recv'ing loop")
+                recieving = False
+
+            #If something was recieved from socket
+            if recieving:
+                #Make the image graph compatible
+                image_input = make_compatible(image_input, False)
+                #Explicitly make into '1' batch tensor
+                image_input = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
+
+                #Get the graph's prediction
+                if graph_ref.LoadTensor(image_input, "image"):
+                    #Get output of graph
+                    output, userobj = graph_ref.GetResult()
+
+                    #One hot encoding, want probability of class 1 (galaxy).
+                    #Note ncsdk doesn't support the predictor layer which softmaxes
+                    #the last dense layer to give class probability, so manual
+                    #softmax must be done in its place
+                    pred = softmax(output)[1]
+                    #print(pred)
+                    print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
+
+                    #Write information into heatmap. Likelihood is simply added onto
+                    #heat map at each pixel
+                    image_tlx = x_count*stride_x
+                    image_brx = image_tlx + INPUT_WIDTH
+                    image_tly = y_count*stride_y
+                    image_bry = image_tly + INPUT_HEIGHT
+
+                    prob_ag_map[image_tlx:image_brx,
+                                image_tly:image_bry,
+                                f_count] += pred
+                    sample_map[image_tlx:image_brx,
+                                image_tly:image_bry,
+                                f_count] += 1.0
+
+                    #Increment counters
+                    count = count + 1
+                    y_count = y_count + 1
+                    if y_count == steps_y:
+                        y_count = 0
+                        x_count = x_count + 1
+                    if x_count == steps_x:
+                        x_count = 0
+                        f_count = f_count + 1
+
+                else:
+                    print("Error: cannot evaluate output of neural network, continuing")
+                    continue
+
+        #Finished recieving, deallocate the graph from the device
+        graph_ref.DeallocateGraph()
+
+        #Close opened device
+        device.CloseDevice()
+
+        #Announce progress
+        print("Normalising prediction map")
+
+        #Normalise the probability by dividing the aggregate prob by the amount
+        #of predictions/samples made at that pixel. Handle divide by zeroes which may
+        #occur along edges
+        prob_map = np.divide(   prob_ag_map, sample_map,
+                                out=np.zeros_like(prob_ag_map),
+                                where=sample_map!=0)
+
+        #Plot data or visualisation
+        print("Plotting 2D component prediction map(s)")
+        plot_prob_map(prob_map)
+
+        '''
         #Fork child
         pid = os.fork()
 
@@ -647,7 +788,7 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                 #If something was recieved from socket
                 if recieving:
                     #Make the image graph compatible
-                    image_input = make_compatible(image_input, True)
+                    image_input = make_compatible(image_input, False)
                     #Explicitly make into '1' batch tensor
                     image_input = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
 
@@ -656,24 +797,51 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                         #Get output of graph
                         output, userobj = graph_ref.GetResult()
 
-                        #One hot encoding, want probability of class 1 (galaxy)
-                        pred = output[1]
+                        #One hot encoding, want probability of class 1 (galaxy).
+                        #Note ncsdk doesn't support the predictor layer which softmaxes
+                        #the last dense layer to give class probability, so manual
+                        #softmax must be done in its place
+                        pred = softmax(output)[1]
 
-                        print(output)
+                        #Write information into heatmap. Likelihood is simply added onto
+                        #heat map at each pixel
+                        image_tlx = x_count*stride_x
+                        image_brx = image_tlx + INPUT_WIDTH
+                        image_tly = y_count*stride_y
+                        image_bry = image_tly + INPUT_HEIGHT
+
+                        prob_ag_map[image_tlx:image_brx,
+                                    image_tly:image_bry,
+                                    f_count] += pred
+                        sample_map[image_tlx:image_brx,
+                                    image_tly:image_bry,
+                                    f_count] += 1.0
+
+                        #Increment counters
+                        count = count + 1
+                        y_count = y_count + 1
+                        if y_count == steps_y:
+                            y_count = 0
+                            x_count = x_count + 1
+                        if x_count == steps_x:
+                            x_count = 0
+                            f_count = f_count + 1
+
                     else:
                         print("Error: cannot evaluate output of neural network, continuing")
                         continue
 
             #Finished recieving, deallocate the graph from the device
-            #graph_ref.DeallocateGraph()
+            graph_ref.DeallocateGraph()
 
             #Close opened device
-            #device.CloseDevice()
+            device.CloseDevice()
 
             #Kill child
             sys.exit()
         else:
             print("Error: couldn't successfully fork a child for NCS " + str(d))
+        '''
 
 #Plots the convolutional filter-weights/kernel for a given layer using matplotlib
 def plot_conv_weights(graph_name, scope, start_suffix, end_suffix):
@@ -756,8 +924,6 @@ def new_graph(id,             #Unique identifier for saving the graph
         #and supervisory signals which are boolean (is or is not a galaxy)
         labels = tf.placeholder(tf.float32, shape=[None, 2], name='labels')
         print("\t\t" + '{:20s}'.format("-Label placeholder ") + " : " + str(labels))
-        #Whether or not we are training (for batch normalisation)
-        is_training = tf.placeholder(tf.bool, name='is_training')
 
     #This layer will be transformed along the way
     layer = images
@@ -781,26 +947,13 @@ def new_graph(id,             #Unique identifier for saving the graph
             padding='SAME',
             use_bias=True,
             bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
-            activation=None,
+            activation=tf.nn.relu,
             trainable=True,
             name="conv_" + str(i)
         )
         print("\t\t" + '{:20s}'.format("-Convolutional ") + str(i) + ": " + str(layer))
-
-        #Apply batch normalisation after ReLU, see this function's parameter comments
-        #for why this is wrapped in a conditional
         '''
-        if for_training:
-            layer = tf.layers.batch_normalization(
-                inputs=layer,
-                training=is_training,
-                name="conv_batch_norm_" + str(i)
-            )
-            print("\t\t" + '{:20s}'.format("-Conv batch norm ")  + str(i) + ": " + str(layer))
-        '''
-
         #Apply pooling
-        '''
         layer = tf.layers.average_pooling2d(
             inputs=layer,
             pool_size=2,
@@ -810,7 +963,6 @@ def new_graph(id,             #Unique identifier for saving the graph
         )
         print("\t\t" + '{:20s}'.format("-Average pooling ")  + str(i) + ": " + str(layer))
         '''
-
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
     num_features = (layer.get_shape())[1:4].num_elements()
@@ -833,18 +985,6 @@ def new_graph(id,             #Unique identifier for saving the graph
         )
         print("\t\t" + '{:20s}'.format("-Dense ") + str(i) + ": " + str(layer))
 
-        #Apply batch normalisation after ReLU, see this function's parameter comments
-        #for why this is wrapped in a conditional]
-        '''
-        if for_training:
-            layer = tf.layers.batch_normalization(
-                inputs=layer,
-                training=is_training,
-                name="dense_batch_norm_" + str(i)
-            )
-            print("\t\t" + '{:20s}'.format("-Dense batch norm ") + str(i) + ": " + str(layer))
-        '''
-
     #The final layer is a neuron for each class
     layer = tf.layers.dense(
         inputs=layer,
@@ -857,14 +997,17 @@ def new_graph(id,             #Unique identifier for saving the graph
     )
     print("\t\t" + '{:20s}'.format("-Dense (final)") + " : " + str(layer))
 
-    #Final fully connected layer suggests prediction (these structures are added to
-    #collections for ease of access later on). This gets the most likely prediction
-    print("\t*Prediction details:")
-    prediction = tf.nn.softmax(layer, name='predictor')
-    print("\t\t" + '{:20s}'.format("-Predictor") + " : " + str(prediction))
-
-    #Backpropogation details only required when training
+    #The following structures are only required when training
     if for_training:
+        #Final fully connected layer suggests prediction (these structures are added to
+        #collections for ease of access later on). This gets the most likely prediction.
+        #Note that the tf.nn.softmax layer is considered to operate only on large dtypes
+        #by the ncsdk and may be less performant
+        print("\t*Prediction details:")
+        prediction = tf.nn.softmax(layer, name='predictor')
+        print("\t\t" + '{:20s}'.format("-Predictor") + " : " + str(prediction))
+
+        #Backpropogation details only required when training
         print("\t*Backpropagation details:")
 
         #Cross entropy (+ve and approaches zero as the model output
@@ -883,7 +1026,7 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Decaying learning rate for bolder retuning
         #at the beginning of the training run and more finessed tuning at end
         global_step = tf.Variable(0, trainable=False)   #Incremented per batch
-        init_alpha = 0.00005
+        init_alpha = 0.00001
         decay_base = 1      #alpha = alpha*decay_base^(global_step/decay_steps)
         decay_steps = 64
         alpha = tf.train.exponential_decay( init_alpha,
@@ -894,15 +1037,12 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         #Optimisation function to Optimise cross entropy will be Adam optimizer
         #(advanced gradient descent)
-        #Require the following extra ops due to batch normalisation
-        extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        with tf.control_dependencies(extra_update_ops):
-            optimiser = (
-                tf.train.AdamOptimizer(learning_rate=init_alpha)
-                .minimize(loss, global_step=global_step)    #Decay learning rate
-                                                            #by incrementing global step
-                                                            #once per batch
-            )
+        optimiser = (
+            tf.train.AdamOptimizer(learning_rate=init_alpha)
+            .minimize(loss, global_step=global_step)    #Decay learning rate
+                                                        #by incrementing global step
+                                                        #once per batch
+        )
         print("\t\t" + '{:20s}'.format("-Optimiser") + " : " + str(optimiser.name))
 
 #Wraps the above to make a basic convolutional neural network for binary

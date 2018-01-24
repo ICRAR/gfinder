@@ -1,9 +1,9 @@
 //Compile with makefile provided
 
 //For example:
-//  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,899 -p 10000
-//  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -v -r 0 -c 900,993 -p 10000
-//  ./gfinder -f /mnt/shared-storage/dingo.03000.with_catalogue.jpx -g test-graph -e 2852,3492,6,6 -r 0 -c 48,48 -p 10000
+//  ./gfinder -f /media/izy/irw_ntfs_0/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,799 -p 10000
+//  ./gfinder -f /media/izy/irw_ntfs_0/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 800,899 -p 10000
+//  ./gfinder -f /media/izy/irw_ntfs_0/dingo.00000.with_catalogue.jpx -g test-graph -e 28,1489,400,400 -r 0 -c 994,994 -p 10000
 
 //C++ standard includes
 #include <iostream>     //For cout
@@ -51,7 +51,7 @@ const int INPUT_WIDTH = 32;
 const int INPUT_HEIGHT = 32;
 
 //Number of images to feed per batch (minibatch)
-const int BATCH_SIZE = 32;
+const int BATCH_SIZE = 1;
 
 //Global command line variables, use getopt to get the following arguments:
 char *JPX_FILEPATH    = NULL;
