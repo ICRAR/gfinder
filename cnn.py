@@ -568,83 +568,6 @@ def compile_for_ncs(graph_name):
     #,stdout=open(os.devnull, 'wb')  #Suppress output
     );
 
-#Creates a process that manages an NCS (intakes new input data and writes
-#output data to shared memory)
-def run_ncs(device, device_index, graph_ref, child_end,
-            shared_prob_map, shared_sample_map,
-            w, h, d,
-            shared_count, expected):
-    #Reshape shared memory as a numpy array by first making 1d
-    prob_ag_map_1d = np.frombuffer(shared_prob_map.get_obj())
-    sample_map_1d = np.frombuffer(shared_sample_map.get_obj())
-
-    #And then reshaping
-    prob_ag_map = prob_ag_map_1d.reshape((w, h, d))
-    sample_map = sample_map_1d.reshape((w, h, d))
-
-    print(str(device_index) + " " + str(graph_ref))
-
-    #Begin processing loop
-    while True:
-        #Read the pipe for new data, when it comes in, unpack it. There could be
-        #some delay at the start while booting NCS'
-        data = child_end.recv()
-
-        print(str(device_index) + " data rec")
-        #print(data)
-
-        #Check if ending flag has been sent, in which case close
-        if data[0] == "CLOSED":
-            break
-
-        #Unpack data into region bounds to aggregate prediction onto and
-        #actual image data for inferencing
-        image_tlx   = data[0]
-        image_brx   = image_tlx + INPUT_WIDTH
-        image_tly   = data[1]
-        image_bry   = image_tly + INPUT_HEIGHT
-        image_f     = data[2]
-        image_input = data[3]
-        image_name  = "image:" + str(image_tlx) + ":" + str(image_tly) + ":" + str(image_f)
-
-        #Get the graph's prediction
-        print(str(device_index) + " preload")
-        if graph_ref.LoadTensor(image_input, image_name):
-            print(str(device_index) + " postload")
-            #Get output of graph
-            output, userobj = graph_ref.GetResult()
-            print(str(device_index) + " getres")
-
-
-            #One hot encoding, want probability of class 1 (galaxy).
-            #Note ncsdk doesn't support the predictor layer which softmaxes
-            #the last dense layer to give class probability, so manual
-            #softmax must be done in its place
-            pred = softmax(output)[1]
-            #print(pred)
-
-            #Incremnt and report shared count
-            shared_count.value += 1
-            print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
-
-            #Write information into heatmap. Likelihood is simply added onto
-            #heat map at each pixel
-            prob_ag_map[image_tlx:image_brx,
-                        image_tly:image_bry,
-                        image_f] += pred
-            sample_map[image_tlx:image_brx,
-                        image_tly:image_bry,
-                        image_f] += 1.0
-
-        else:
-            print("Error: cannot evaluate output of neural network on NCS:" + str(device_index))
-            sys.exit()
-
-    print(str(device_index) + " done")
-
-    #End process
-    sys.exit()
-
 #Boots up one NCS, loads a compiled version of the graph onto it and begins
 #running inferences on it. Supports inferencing a 3d area that must be supplied
 def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
@@ -670,27 +593,19 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
     #Data will need to be stored in a heat map - allocate memory for this
     #data structure. Probability aggregate is the sum of each predictions made
     #that include that pixel. Samples are the number of predictions made for
-    #that pixel. This allows normalised probability map as output. These
-    #are initialised as shared memory arrays (1D) and reshaped in child procs
-    print("Creating shared memory data structures for multiprocessing")
-    shared_prob_map = mp.Array(ctypes.c_double, region_width*region_height*region_depth)
-    shared_sample_map = mp.Array(ctypes.c_double, region_width*region_height*region_depth)
-
-    #Reshape shared memory as a numpy array by first making 1d
-    prob_ag_map_1d = np.frombuffer(shared_prob_map.get_obj())
-    sample_map_1d = np.frombuffer(shared_sample_map.get_obj())
-
-    #And then reshaping. Now this memory structure can be used as a numpy
-    #array between processes
-    prob_ag_map = prob_ag_map_1d.reshape((region_width, region_height, region_depth))
-    sample_map = sample_map_1d.reshape((region_width, region_height, region_depth))
-
-    #For tracking time taken
-    inference_start = datetime.now()
+    #that pixel. This allows normalised probability map as output
+    prob_ag_map = np.zeros(
+        shape=(region_width, region_height, region_depth),
+        dtype=float
+    )
+    sample_map = np.zeros(
+        shape=(region_width, region_height, region_depth),
+        dtype=float #For later convienience
+    )
 
     #Images per freq frame*freq frame for total expected images
     expected = units_per_component*region_depth
-    shared_count = mp.Value('i', 0)
+    shared_count = 0
 
     #Ensure there is at least one NCS
     print("Finding and opening device(s)")
@@ -719,30 +634,6 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
         #will return immediately)
         graph_handles[d].SetGraphOption(mvnc.GraphOption.DONT_BLOCK, 1)
 
-    #In the 'parent' process, create a new process for each NCS with a pipe
-    #to put input data and a reference to the shared probability map
-    '''
-    pipes = []
-    children = []
-    for d in range(num_devices):
-        #Create a pipe for this child and keep track of it
-        parent_end, child_end = mp.Pipe()
-        pipes.append(parent_end)
-
-        #Begin the ncs child process
-        child = mp.Process( target=run_ncs,
-                            args=(  None, d,
-                                    graph_handles[d], child_end,
-                                    shared_prob_map, shared_sample_map,
-                                    region_width, region_height, region_depth,
-                                    shared_count, expected,))
-        children.append(child)
-
-    #Start your engines
-    for c in children:
-        c.start()
-    '''
-
     #Begin recv'ing data and piping it off to children
     #Child, connect to socket
     print("Connecting NCS manager to port " + str(port))
@@ -753,9 +644,6 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
 
     #Begin inference timer
     inference_start = datetime.now()
-
-    #Track which child should be sent data
-    curr_child = 0
 
     #Load image data from socket while there is image data to load
     recieving = True
@@ -833,7 +721,7 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                             pred = softmax(output)[1]
 
                             #Incremnt and report shared count
-                            shared_count.value += 1
+                            shared_count += 1
                             print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
 
                             #Write information into heatmap. Likelihood is simply added onto
@@ -849,41 +737,6 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                         #Otherwise it succeeded, so stop trying to load this image
                         #and go to next one
                         break
-
-            '''
-            #Get the graph's prediction
-            if graph_handles[curr_child].LoadTensor(image_input, image_name):
-                #Get output of graph
-                output, userobj = graph_handles[curr_child].GetResult()
-
-                #One hot encoding, want probability of class 1 (galaxy).
-                #Note ncsdk doesn't support the predictor layer which softmaxes
-                #the last dense layer to give class probability, so manual
-                #softmax must be done in its place
-                pred = softmax(output)[1]
-                #print(pred)
-
-                #Incremnt and report shared count
-                shared_count.value += 1
-                print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
-
-                #Write information into heatmap. Likelihood is simply added onto
-                #heat map at each pixel
-                prob_ag_map[image_tlx:image_brx,
-                            image_tly:image_bry,
-                            image_f] += pred
-                sample_map[image_tlx:image_brx,
-                            image_tly:image_bry,
-                            image_f] += 1.0
-
-            else:
-                print("Error: cannot evaluate output of neural network on NCS:" + str(device_index))
-                sys.exit()
-
-            #Send it over to an NCS quick smart and get ready to send to next NCS
-            #pipes[curr_child].send([image_tlx, image_tly, image_f, image_input])
-            curr_child = 0 if curr_child == num_devices - 1 else curr_child + 1
-            '''
 
     #If here then all of the data has been recv'd from the C++ kakadu wrapper,
     #so just wait for the last few inferences
@@ -908,7 +761,7 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                 pred = softmax(output)[1]
 
                 #Incremnt and report shared count
-                shared_count.value += 1
+                shared_count += 1
                 print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
 
                 #Write information into heatmap. Likelihood is simply added onto
@@ -919,19 +772,6 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                 sample_map[ loc[0]:loc[1],
                             loc[2]:loc[3],
                             loc[4]] += 1.0
-
-    '''
-    #Close all pipes. This is janky but python3 multiprocessing pipes lack a
-    #good closing method - can't use poll! Also can't use queues which have the
-    #empty method since we're going for speed and queues are built on top of pipes
-    for pipe in pipes:
-        pipe.send(["CLOSED"])
-        pipe.close()
-
-    #Wait for NCS children (who may still be inferencing) to die
-    for child in children:
-        child.join()
-    '''
 
     #Deallocate graphs and close devices
     for d in range(num_devices):
