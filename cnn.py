@@ -18,6 +18,8 @@ import math                                 #For logs
 import time                                 #For debugging with catchup
 from datetime import datetime, timedelta    #For timing inference runs
 import subprocess                           #For compiling graphs
+import multiprocessing as mp                #For NCS multiprocessing
+import ctypes                               #For initialising shared memory arrays
 import socket                               #For IPC
 import select                               #For waiting for socket to fill
 import errno                                #Handling socket errors
@@ -387,12 +389,9 @@ def plot_prob_map(prob_map):
 def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
                                     port,              #Port to stream from
                                     region_width,      #Width of region to evaluate
-                                    steps_x,           #Samples to take in x axis
-                                    stride_x,          #Pixels between samples
                                     region_height,     #Height of region to evaluate
-                                    steps_y,           #Samples to take in y axis
-                                    stride_y,          #Pixels between samples
-                                    region_depth):     #Depth of region to evaluate
+                                    region_depth,      #Depth of region to evaluate
+                                    units_per_component):   #How many images at each frequency
 
     sock = socket.socket()
     sock.connect(('', port))
@@ -440,20 +439,27 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
         dtype=float #For later convienience
     )
 
-    #Counters for ordered receiving of x,y,f
-    x_count = 0
-    y_count = 0
-    f_count = 0
-    count = 0
-    expected = steps_x*steps_y*region_depth
-
-    #Begin inference timer
+    #For tracking time and progress
     inference_start = datetime.now()
+    count = 0
+    expected = units_per_component*region_depth #Images per freq frame*freq frame for total expected images
 
     #Load image data from socket while there is image data to load
     recieving = True
     while recieving:
-        #When ready then recv
+        #When ready then recv location of image in evaluation space
+        image_loc = None
+        ready = select.select([sock], [], [], timeout)
+        if ready[0]:
+            #If 3*4 units are recieved then this is an image's location
+            image_loc_bytes = sock.recv(3*4)
+            image_loc = byte_string_to_int_array(image_loc_bytes)
+            if len(image_loc) != 3 or not image_loc:
+                #No data found in socket, stop recving
+                print("Error: image location data not recv'd correctly, finishing early")
+                break
+
+        #When ready then recv image data
         image_input = None
         ready = select.select([sock], [], [], timeout)
         if ready[0]:
@@ -473,8 +479,13 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
 
         #If something was recieved from socket
         if recieving:
-            #Make the image graph compatible
+            #Make the recv'd data graph compatible
             image_input = make_compatible(image_input, False)
+            image_tlx = image_loc[0][0]
+            image_brx = image_tlx + INPUT_WIDTH
+            image_tly = image_loc[1][0]
+            image_bry = image_tly + INPUT_HEIGHT
+            image_f   = image_loc[2][0]
 
             #Create a unitary feeder dictionary
             feed_dict_eval = {  'images:0': [image_input]  }
@@ -484,31 +495,17 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
             output = sess.run(OUTPUT_CPU_NAME + ':0', feed_dict=feed_dict_eval)[0]
             pred = softmax(output)[1]
             #print(pred)
+            count += 1
             print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
 
             #Write information into heatmap. Likelihood is simply added onto
             #heat map at each pixel
-            image_tlx = x_count*stride_x
-            image_brx = image_tlx + INPUT_WIDTH
-            image_tly = y_count*stride_y
-            image_bry = image_tly + INPUT_HEIGHT
-
             prob_ag_map[image_tlx:image_brx,
                         image_tly:image_bry,
-                        f_count] += pred
+                        image_f] += pred
             sample_map[image_tlx:image_brx,
                         image_tly:image_bry,
-                        f_count] += 1.0
-
-            #Increment counters
-            count = count + 1
-            y_count = y_count + 1
-            if y_count == steps_y:
-                y_count = 0
-                x_count = x_count + 1
-            if x_count == steps_x:
-                x_count = 0
-                f_count = f_count + 1
+                        image_f] += 1.0
 
     #Announce progress
     print("Normalising prediction map")
@@ -571,17 +568,91 @@ def compile_for_ncs(graph_name):
     #,stdout=open(os.devnull, 'wb')  #Suppress output
     );
 
+#Creates a process that manages an NCS (intakes new input data and writes
+#output data to shared memory)
+def run_ncs(device, device_index, graph_ref, child_end,
+            shared_prob_map, shared_sample_map,
+            w, h, d,
+            shared_count, expected):
+    #Reshape shared memory as a numpy array by first making 1d
+    prob_ag_map_1d = np.frombuffer(shared_prob_map.get_obj())
+    sample_map_1d = np.frombuffer(shared_sample_map.get_obj())
+
+    #And then reshaping
+    prob_ag_map = prob_ag_map_1d.reshape((w, h, d))
+    sample_map = sample_map_1d.reshape((w, h, d))
+
+    print(str(device_index) + " " + str(graph_ref))
+
+    #Begin processing loop
+    while True:
+        #Read the pipe for new data, when it comes in, unpack it. There could be
+        #some delay at the start while booting NCS'
+        data = child_end.recv()
+
+        print(str(device_index) + " data rec")
+        #print(data)
+
+        #Check if ending flag has been sent, in which case close
+        if data[0] == "CLOSED":
+            break
+
+        #Unpack data into region bounds to aggregate prediction onto and
+        #actual image data for inferencing
+        image_tlx   = data[0]
+        image_brx   = image_tlx + INPUT_WIDTH
+        image_tly   = data[1]
+        image_bry   = image_tly + INPUT_HEIGHT
+        image_f     = data[2]
+        image_input = data[3]
+        image_name  = "image:" + str(image_tlx) + ":" + str(image_tly) + ":" + str(image_f)
+
+        #Get the graph's prediction
+        print(str(device_index) + " preload")
+        if graph_ref.LoadTensor(image_input, image_name):
+            print(str(device_index) + " postload")
+            #Get output of graph
+            output, userobj = graph_ref.GetResult()
+            print(str(device_index) + " getres")
+
+
+            #One hot encoding, want probability of class 1 (galaxy).
+            #Note ncsdk doesn't support the predictor layer which softmaxes
+            #the last dense layer to give class probability, so manual
+            #softmax must be done in its place
+            pred = softmax(output)[1]
+            #print(pred)
+
+            #Incremnt and report shared count
+            shared_count.value += 1
+            print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
+
+            #Write information into heatmap. Likelihood is simply added onto
+            #heat map at each pixel
+            prob_ag_map[image_tlx:image_brx,
+                        image_tly:image_bry,
+                        image_f] += pred
+            sample_map[image_tlx:image_brx,
+                        image_tly:image_bry,
+                        image_f] += 1.0
+
+        else:
+            print("Error: cannot evaluate output of neural network on NCS:" + str(device_index))
+            sys.exit()
+
+    print(str(device_index) + " done")
+
+    #End process
+    sys.exit()
+
 #Boots up one NCS, loads a compiled version of the graph onto it and begins
 #running inferences on it. Supports inferencing a 3d area that must be supplied
 def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                                     port,              #Port to stream from
                                     region_width,      #Width of region to evaluate
-                                    steps_x,           #Samples to take in x axis
-                                    stride_x,          #Pixels between samples
                                     region_height,     #Height of region to evaluate
-                                    steps_y,           #Samples to take in y axis
-                                    stride_y,          #Pixels between samples
-                                    region_depth):     #Depth of region to evaluate
+                                    region_depth,      #Depth of region to evaluate
+                                    units_per_component):   #Needed to calculate expected units
 
     #Compile a copy of the evaluation graph for running on the ncs
     compile_for_ncs(graph_name)
@@ -592,270 +663,313 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
     with open(filepath, mode='rb') as f:
         #Read it in
         graph_file = f.read()
+    if graph_file == None:
+        print("Error: evaluation graph compiled for ncs could not be read, exiting")
+        sys.exit()
 
     #Data will need to be stored in a heat map - allocate memory for this
     #data structure. Probability aggregate is the sum of each predictions made
     #that include that pixel. Samples are the number of predictions made for
-    #that pixel. This allows normalised probability map as output
-    prob_ag_map = np.zeros(
-        shape=(region_width, region_height, region_depth),
-        dtype=float
-    )
-    sample_map = np.zeros(
-        shape=(region_width, region_height, region_depth),
-        dtype=float #For later convienience
-    )
+    #that pixel. This allows normalised probability map as output. These
+    #are initialised as shared memory arrays (1D) and reshaped in child procs
+    print("Creating shared memory data structures for multiprocessing")
+    shared_prob_map = mp.Array(ctypes.c_double, region_width*region_height*region_depth)
+    shared_sample_map = mp.Array(ctypes.c_double, region_width*region_height*region_depth)
 
-    #Counters for ordered receiving of x,y,f
-    x_count = 0
-    y_count = 0
-    f_count = 0
-    count = 0
-    expected = steps_x*steps_y*region_depth
+    #Reshape shared memory as a numpy array by first making 1d
+    prob_ag_map_1d = np.frombuffer(shared_prob_map.get_obj())
+    sample_map_1d = np.frombuffer(shared_sample_map.get_obj())
+
+    #And then reshaping. Now this memory structure can be used as a numpy
+    #array between processes
+    prob_ag_map = prob_ag_map_1d.reshape((region_width, region_height, region_depth))
+    sample_map = sample_map_1d.reshape((region_width, region_height, region_depth))
+
+    #For tracking time taken
+    inference_start = datetime.now()
+
+    #Images per freq frame*freq frame for total expected images
+    expected = units_per_component*region_depth
+    shared_count = mp.Value('i', 0)
 
     #Ensure there is at least one NCS
-    device_list = mvnc.EnumerateDevices()
-    if len(device_list) == 0:
-        print("Error: no NCS devices detected, exiting")
+    print("Finding and opening device(s)")
+    device_name_list = mvnc.EnumerateDevices()
+    num_devices = len(device_name_list)
+    if num_devices == 0:
+        print("none found! Exiting")
         sys.exit()
-    elif len(device_list) == 1:
-        print("Forking " + str(len(device_list)) + " additional NCS management child")
-    else:
-        print("Forking " + str(len(device_list)) + " additional NCS management children")
 
-    #Fork a child process for each available NCS
-    for d in range(len(device_list)):
-        #Try to open an NCS for each child
-        device = mvnc.Device(device_list[d])
-        device.OpenDevice()
+    #For whatever reason multiple allocation must be done like so - thanks ncsdk
+    device_handles = []
+    graph_handles = []
+    for d in range(num_devices):
+        #Get device
+        device_handles.append(mvnc.Device(device_name_list[d]))
 
-        #Child, connect to socket
-        print("Connecting child evaluation process handling NCS:" + str(d) + " to port " + str(port))
-        sock = socket.socket()
-        sock.connect(('', port))
-        sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-        timeout = 0.5       #How many seconds to wait before finishing
+        #Open device
+        device_handles[d].OpenDevice()
 
         #Allocate the compiled graph onto the device and get a reference
         #for later deallocation
-        graph_ref = device.AllocateGraph(graph_file)
+        graph_handles.append(device_handles[d].AllocateGraph(graph_file))
 
-        #Announce about to enter reception loop
-        print("Process controlling NCS:" + str(d) + " entering reception loop")
+        #Set graph options to allow for efficiency with multiple NCS'
+        #this prevents LoadTensor() and GetResult() from blocking (they
+        #will return immediately)
+        graph_handles[d].SetGraphOption(mvnc.GraphOption.DONT_BLOCK, 1)
 
-        #Begin inference timer
-        inference_start = datetime.now()
+    #In the 'parent' process, create a new process for each NCS with a pipe
+    #to put input data and a reference to the shared probability map
+    '''
+    pipes = []
+    children = []
+    for d in range(num_devices):
+        #Create a pipe for this child and keep track of it
+        parent_end, child_end = mp.Pipe()
+        pipes.append(parent_end)
 
-        #Load image data from socket while there is image data to load
-        recieving = True
-        while recieving:
-            #When ready then recv
-            image_input = None
-            ready = select.select([sock], [], [], timeout)
-            if ready[0]:
-                #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
-                image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
-                image_input = byte_string_to_int_array(image_bytes)
-                if len(image_input) != INPUT_WIDTH*INPUT_HEIGHT or not image_input:
-                    #No data found in socket, stop recving
-                    print("Error: image data not recv'd correctly, finishing early")
-                    break
-            else:
-                #Announce finish and time taken (remove timeout)
-                inference_duration = datetime.now() - inference_start - timedelta(seconds=timeout)
-                print("\r100.000% complete (" + str(inference_duration) + ")")
-                print("No image data found in socket. Closing NCS:" + str(d) + " and its recv'ing loop")
-                recieving = False
+        #Begin the ncs child process
+        child = mp.Process( target=run_ncs,
+                            args=(  None, d,
+                                    graph_handles[d], child_end,
+                                    shared_prob_map, shared_sample_map,
+                                    region_width, region_height, region_depth,
+                                    shared_count, expected,))
+        children.append(child)
 
-            #If something was recieved from socket
-            if recieving:
-                #Make the image graph compatible
-                image_input = make_compatible(image_input, False)
-                #Explicitly make into '1' batch tensor
-                image_input = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
+    #Start your engines
+    for c in children:
+        c.start()
+    '''
 
-                #Get the graph's prediction
-                if graph_ref.LoadTensor(image_input, "image"):
-                    #Get output of graph
-                    output, userobj = graph_ref.GetResult()
+    #Begin recv'ing data and piping it off to children
+    #Child, connect to socket
+    print("Connecting NCS manager to port " + str(port))
+    sock = socket.socket()
+    sock.connect(('', port))
+    sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
+    timeout = 0.5       #How many seconds to wait before finishing
 
-                    #One hot encoding, want probability of class 1 (galaxy).
-                    #Note ncsdk doesn't support the predictor layer which softmaxes
-                    #the last dense layer to give class probability, so manual
-                    #softmax must be done in its place
-                    pred = softmax(output)[1]
-                    #print(pred)
-                    print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
+    #Begin inference timer
+    inference_start = datetime.now()
 
-                    #Write information into heatmap. Likelihood is simply added onto
-                    #heat map at each pixel
-                    image_tlx = x_count*stride_x
-                    image_brx = image_tlx + INPUT_WIDTH
-                    image_tly = y_count*stride_y
-                    image_bry = image_tly + INPUT_HEIGHT
+    #Track which child should be sent data
+    curr_child = 0
 
-                    prob_ag_map[image_tlx:image_brx,
-                                image_tly:image_bry,
-                                f_count] += pred
-                    sample_map[image_tlx:image_brx,
-                                image_tly:image_bry,
-                                f_count] += 1.0
+    #Load image data from socket while there is image data to load
+    recieving = True
+    while recieving:
+        #When ready then recv location of image in evaluation space
+        image_loc = None
+        ready = select.select([sock], [], [], timeout)
+        if ready[0]:
+            #If 3*4 units are recieved then this is an image's location
+            image_loc_bytes = sock.recv(3*4)
+            image_loc = byte_string_to_int_array(image_loc_bytes)
+            if len(image_loc) != 3 or not image_loc:
+                #No data found in socket, stop recving
+                print("Error: image location data not recv'd correctly, finishing early")
+                break
 
-                    #Increment counters
-                    count = count + 1
-                    y_count = y_count + 1
-                    if y_count == steps_y:
-                        y_count = 0
-                        x_count = x_count + 1
-                    if x_count == steps_x:
-                        x_count = 0
-                        f_count = f_count + 1
+        #When ready then recv
+        image_input = None
+        ready = select.select([sock], [], [], timeout)
+        if ready[0]:
+            #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
+            image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
+            image_input = byte_string_to_int_array(image_bytes)
+            if len(image_input) != INPUT_WIDTH*INPUT_HEIGHT or not image_input:
+                #No data found in socket, stop recving
+                print("Error: image data not recv'd correctly, finishing early")
+                break
+        else:
+            #No longer reciving, may still be inferencing
+            recieving = False
 
-                else:
-                    print("Error: cannot evaluate output of neural network, continuing")
-                    continue
+        #If something was recieved from socket
+        if recieving:
+            #Make the recv'd data graph compatible
+            image_input = make_compatible(image_input, False)
+            #Explicitly make into '1' batch tensor, NCS won't take it as a list
+            image_input = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
+            image_tlx   = image_loc[0][0]
+            image_brx   = image_tlx + INPUT_WIDTH
+            image_tly   = image_loc[1][0]
+            image_bry   = image_tly + INPUT_HEIGHT
+            image_f     = image_loc[2][0]
+            #CSV encoding location
+            image_name  = str(image_tlx) + ":" +    \
+                          str(image_brx) + ":" +    \
+                          str(image_tly) + ":" +    \
+                          str(image_bry) + ":" +    \
+                          str(image_f)
 
-        #Finished recieving, deallocate the graph from the device
-        graph_ref.DeallocateGraph()
+            #Try to load data onto an NCS
+            loaded = False
+            while not loaded:
+                #Go through all NCS' and attempt to load this new data
+                for graph_ref in graph_handles:
+                    #Try to load new data
+                    loaded = graph_ref.LoadTensor(image_input, image_name)
 
-        #Close opened device
-        device.CloseDevice()
-
-        #Announce progress
-        print("Normalising prediction map")
-
-        #Normalise the probability by dividing the aggregate prob by the amount
-        #of predictions/samples made at that pixel. Handle divide by zeroes which may
-        #occur along edges
-        prob_map = np.divide(   prob_ag_map, sample_map,
-                                out=np.zeros_like(prob_ag_map),
-                                where=sample_map!=0)
-
-        #Plot data or visualisation
-        print("Plotting 2D component prediction map(s)")
-        plot_prob_map(prob_map)
-
-        '''
-        #Fork child
-        pid = os.fork()
-
-        #Behaviour changes per process
-        if pid > 0:
-            #Parent, if not a process for each device then keep forking
-            if d == len(device_list) - 1:
-                #Enough children, wait for them each to die
-                dead_children = 0
-                while(dead_children < len(device_list)):
-                    os.wait()   #Waits for one child to die
-                    dead_children = dead_children + 1
-
-                #Once dead children have been gathered then data can be processed
-                print("All children dead, processing results")
-
-        elif pid == 0:
-            #Child, connect to socket
-            print("Connecting child evaluation process handling NCS:" + str(d) + " to port " + str(port))
-            sock = socket.socket()
-            sock.connect(('', port))
-            sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-            timeout = 3         #Five second timeout
-
-            #Allocate the compiled graph onto the device and get a reference
-            #for later deallocation
-            graph_ref = device.AllocateGraph(graph_file)
-
-            #Announce about to enter reception loop
-            print("Process controlling NCS:" + str(d) + " entering reception loop")
-
-            #Load image data from socket while there is image data to load
-            recieving = True
-            while recieving:
-                #When ready then recv
-                image_input = None
-                ready = select.select([sock], [], [], timeout)
-                if ready[0]:
-                    #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
-                    image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
-                    image_input = byte_string_to_int_array(image_bytes)
-                    if len(image_input) != INPUT_WIDTH*INPUT_HEIGHT or not image_input:
-                        #No data found in socket, stop recving
-                        print("Error: image data not recv'd correctly, finishing early")
-                        break
-                else:
-                    print("No image data found in socket. Closing NCS:" + str(d))
-                    recieving = False
-
-                #If something was recieved from socket
-                if recieving:
-                    #Make the image graph compatible
-                    image_input = make_compatible(image_input, False)
-                    #Explicitly make into '1' batch tensor
-                    image_input = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
-
-                    #Get the graph's prediction
-                    if graph_ref.LoadTensor(image_input, "image"):
-                        #Get output of graph
+                    #If it failed then try to get inference of what must be
+                    #currently loaded onto device
+                    if not loaded:
                         output, userobj = graph_ref.GetResult()
 
-                        #One hot encoding, want probability of class 1 (galaxy).
-                        #Note ncsdk doesn't support the predictor layer which softmaxes
-                        #the last dense layer to give class probability, so manual
-                        #softmax must be done in its place
-                        pred = softmax(output)[1]
+                        if userobj == None:
+                            #If no inference then still inferencing, so try next NCS
+                            continue
+                        else:
+                            #Otherwise process inference results. Get location
+                            #of the processed area through the userobj string
+                            loc = [int(x) for x in userobj.split(':')]
 
-                        #Write information into heatmap. Likelihood is simply added onto
-                        #heat map at each pixel
-                        image_tlx = x_count*stride_x
-                        image_brx = image_tlx + INPUT_WIDTH
-                        image_tly = y_count*stride_y
-                        image_bry = image_tly + INPUT_HEIGHT
+                            #One hot encoding, want probability of class 1 (galaxy).
+                            #Note ncsdk doesn't support the predictor layer which softmaxes
+                            #the last dense layer to give class probability, so manual
+                            #softmax must be done in its place
+                            pred = softmax(output)[1]
 
-                        prob_ag_map[image_tlx:image_brx,
-                                    image_tly:image_bry,
-                                    f_count] += pred
-                        sample_map[image_tlx:image_brx,
-                                    image_tly:image_bry,
-                                    f_count] += 1.0
+                            #Incremnt and report shared count
+                            shared_count.value += 1
+                            print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
 
-                        #Increment counters
-                        count = count + 1
-                        y_count = y_count + 1
-                        if y_count == steps_y:
-                            y_count = 0
-                            x_count = x_count + 1
-                        if x_count == steps_x:
-                            x_count = 0
-                            f_count = f_count + 1
+                            #Write information into heatmap. Likelihood is simply added onto
+                            #heat map at each pixel
+                            prob_ag_map[loc[0]:loc[1],
+                                        loc[2]:loc[3],
+                                        loc[4]] += pred
+                            sample_map[ loc[0]:loc[1],
+                                        loc[2]:loc[3],
+                                        loc[4]] += 1.0
 
                     else:
-                        print("Error: cannot evaluate output of neural network, continuing")
-                        continue
+                        #Otherwise it succeeded, so stop trying to load this image
+                        #and go to next one
+                        break
 
-            #Finished recieving, deallocate the graph from the device
-            graph_ref.DeallocateGraph()
+            '''
+            #Get the graph's prediction
+            if graph_handles[curr_child].LoadTensor(image_input, image_name):
+                #Get output of graph
+                output, userobj = graph_handles[curr_child].GetResult()
 
-            #Close opened device
-            device.CloseDevice()
+                #One hot encoding, want probability of class 1 (galaxy).
+                #Note ncsdk doesn't support the predictor layer which softmaxes
+                #the last dense layer to give class probability, so manual
+                #softmax must be done in its place
+                pred = softmax(output)[1]
+                #print(pred)
 
-            #Kill child
-            sys.exit()
-        else:
-            print("Error: couldn't successfully fork a child for NCS " + str(d))
-        '''
+                #Incremnt and report shared count
+                shared_count.value += 1
+                print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
+
+                #Write information into heatmap. Likelihood is simply added onto
+                #heat map at each pixel
+                prob_ag_map[image_tlx:image_brx,
+                            image_tly:image_bry,
+                            image_f] += pred
+                sample_map[image_tlx:image_brx,
+                            image_tly:image_bry,
+                            image_f] += 1.0
+
+            else:
+                print("Error: cannot evaluate output of neural network on NCS:" + str(device_index))
+                sys.exit()
+
+            #Send it over to an NCS quick smart and get ready to send to next NCS
+            #pipes[curr_child].send([image_tlx, image_tly, image_f, image_input])
+            curr_child = 0 if curr_child == num_devices - 1 else curr_child + 1
+            '''
+
+    #If here then all of the data has been recv'd from the C++ kakadu wrapper,
+    #so just wait for the last few inferences
+    while(shared_count.value != expected):
+        #Go through all NCS' and attempt to get inference results
+        for graph_ref in graph_handles:
+            #Try to get inference results and check if inference is yet complete
+            output, userobj = graph_ref.GetResult()
+
+            if userobj == None:
+                #If no inference then still inferencing, so try next NCS
+                continue
+            else:
+                #Otherwise process inference results. Get location
+                #of the processed area through the userobj string
+                loc = [int(x) for x in userobj.split(':')]
+
+                #One hot encoding, want probability of class 1 (galaxy).
+                #Note ncsdk doesn't support the predictor layer which softmaxes
+                #the last dense layer to give class probability, so manual
+                #softmax must be done in its place
+                pred = softmax(output)[1]
+
+                #Incremnt and report shared count
+                shared_count.value += 1
+                print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
+
+                #Write information into heatmap. Likelihood is simply added onto
+                #heat map at each pixel
+                prob_ag_map[loc[0]:loc[1],
+                            loc[2]:loc[3],
+                            loc[4]] += pred
+                sample_map[ loc[0]:loc[1],
+                            loc[2]:loc[3],
+                            loc[4]] += 1.0
+
+    '''
+    #Close all pipes. This is janky but python3 multiprocessing pipes lack a
+    #good closing method - can't use poll! Also can't use queues which have the
+    #empty method since we're going for speed and queues are built on top of pipes
+    for pipe in pipes:
+        pipe.send(["CLOSED"])
+        pipe.close()
+
+    #Wait for NCS children (who may still be inferencing) to die
+    for child in children:
+        child.join()
+    '''
+
+    #Deallocate graphs and close devices
+    for d in range(num_devices):
+        #Finished recieving, deallocate the graph from the device
+        graph_handles[d].DeallocateGraph()
+
+        #Close opened device
+        device_handles[d].CloseDevice()
+
+    #Inferencing now complete
+    inference_duration = datetime.now() - inference_start - timedelta(seconds=timeout)
+    print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete (" + str(inference_duration) + ")")
+
+    #Normalise the probability by dividing the aggregate prob by the amount
+    #of predictions/samples made at that pixel. Handle divide by zeroes which may
+    #occur along edges
+    print("Normalising prediction map")
+    prob_map = np.divide(   prob_ag_map, sample_map,
+                            out=np.zeros_like(prob_ag_map),
+                            where=sample_map!=0)
+
+    #Plot data or visualisation
+    print("Plotting 2D component prediction map(s)")
+    plot_prob_map(prob_map)
 
 #Plots the convolutional filter-weights/kernel for a given layer using matplotlib
-def plot_conv_weights(graph_name, scope, start_suffix, end_suffix):
+def plot_conv_weights(graph_name, scope, start_conv, final_conv, suffix):
     #Make sure graph structure is reset before opening session
     tf.reset_default_graph()
 
     #Begin a tensorflow session
     sess = tf.Session()
 
-    #Load the graph to be trained & keep the saver for later updating
+    #Load the graph to be trained
     saver = restore_model(graph_name, sess)
 
     #Get the weights
-    for j in range(start_suffix, end_suffix + 1):
+    for j in range(start_conv, final_conv + 1):
         w = None
         for v in tf.all_variables():
             if v.name == scope + str(j) + '/kernel:0':
@@ -888,7 +1002,7 @@ def plot_conv_weights(graph_name, scope, start_suffix, end_suffix):
             ax.set_xticks([])
             ax.set_yticks([])
 
-        fig.savefig("output/" + scope + str(j) + "_kernel")
+        fig.savefig("output/" + scope + str(j) + "_kernel_" + str(suffix))
 
     #Explicity close figure for memory usage
     plt.close(fig)
@@ -1026,7 +1140,7 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Decaying learning rate for bolder retuning
         #at the beginning of the training run and more finessed tuning at end
         global_step = tf.Variable(0, trainable=False)   #Incremented per batch
-        init_alpha = 0.00001
+        init_alpha = 0.0001
         decay_base = 1      #alpha = alpha*decay_base^(global_step/decay_steps)
         decay_steps = 64
         alpha = tf.train.exponential_decay( init_alpha,

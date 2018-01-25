@@ -735,16 +735,13 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
 
     //Call function with the graph to train on and the port to listen for
     //training data on
-    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, i, i, i, i)",
+    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, i)",
       GRAPH_NAME,
-      PORT_NO,
-      LIMIT_RECT_W,
-      steps_x,
-      stride_x,
+      PORT_NO,        //Where to get data
+      LIMIT_RECT_W,   //Following so python knows how big to make eval heatmap
       LIMIT_RECT_H,
-      steps_y,
-      stride_y,
-      (FINAL_COMPONENT_INDEX - START_COMPONENT_INDEX + 1)
+      (FINAL_COMPONENT_INDEX - START_COMPONENT_INDEX + 1),
+      units_per_component
     ));
     PyErr_Print();
 
@@ -760,7 +757,7 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
     if(server < 0){
       cout << "Error: couldn't accept client connection\n";
     }else{
-      cout << clients_required << " evaluation client(s) successfully connected,"
+      cout << "Evaluation client successfully connected, "
         << "begin streaming decompressed data\n";
     }
 
@@ -874,6 +871,17 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
 
           //Render until there is no incomplete region remaining
           }while(!incomplete_region.is_empty());
+
+          //Send the coordinates that this image are corresponds to in the evalulation
+          //area in form x,y,f
+          kdu_uint32 loc[3] = {x - LIMIT_RECT_X, y - LIMIT_RECT_Y, c - START_COMPONENT_INDEX};
+          int loc_transmitted = send(server, &loc, sizeof(loc), 0);
+          if(loc_transmitted != 3*4){
+            cout << "Error: position (" << x << ", "
+              << y << ", " << c << ") was not sent completely over socket, "
+              << "len=" << loc_transmitted << "\n";
+            return;
+          }
 
           //Send the now complete image data
           int image_transmitted = send(server, &buffer, sizeof(buffer), 0);
