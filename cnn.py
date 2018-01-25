@@ -18,8 +18,6 @@ import math                                 #For logs
 import time                                 #For debugging with catchup
 from datetime import datetime, timedelta    #For timing inference runs
 import subprocess                           #For compiling graphs
-import multiprocessing as mp                #For NCS multiprocessing
-import ctypes                               #For initialising shared memory arrays
 import socket                               #For IPC
 import select                               #For waiting for socket to fill
 import errno                                #Handling socket errors
@@ -41,11 +39,12 @@ os.environ['TF_CPP_MIN_LOG_LEVEL']='1'  #1 filters all
 GRAPHS_FOLDER = "./graphs"
 LOGS_FOLDER = "./logs"
 
-#Names of inputs and outputs in tensorflow graph (for compiling for NCS)
-#See 'new_graph' function for options
+#Variables for compiling evaluation graphs for NCS
+#See 'new_graph' function for explanation of names here options
 INPUT_NAME = "images"
 OUTPUT_CPU_NAME = "dense_final/BiasAdd"
 OUTPUT_NCS_NAME = "dense_final/BiasAdd"
+SHAVES = 12 #Each NCS has 12 shave cores. Use them all
 
 #Hardcoded image input dimensions
 INPUT_WIDTH = 32
@@ -53,9 +52,9 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [5, 5, 5, 5]
+FILTER_SIZES    =   [7, 7, 7, 7]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 12, 16, 20]
+NUM_FILTERS     =   [8, 16, 24, 32]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
 FC_SIZES        =   [2048, 256, 32]
@@ -143,6 +142,11 @@ def byte_string_to_int_array(bytes):
         i = i + 4
     return data
 
+#Facilitates the saving of an area of input data for comparison with evaluation
+#process
+def save_data_as_comparison_image(image_date, name):
+    print("TODO")
+
 #Boots up a concurrently running client that keeps the trainable graph in memory
 #to speed up training time. Updates depending on argument at the end of its run
 def run_training_client(graph_name, port, optimise_and_save, batch_size, total_units):
@@ -160,7 +164,8 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
     sess = tf.Session()
 
     #Load the graph to be trained & keep the saver for later updating
-    print("Loading graph '" + graph_name + "' for " + ("training" if optimise_and_save == 1 else "validation"))
+    print(  "Loading graph '" + graph_name + "' for " + \
+            ("training" if optimise_and_save == 1 else "validation"))
     saver = restore_model(graph_name, sess)
 
     #Prepare to track information
@@ -169,8 +174,8 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
     t_neg = 0   #Correctly classified noise
     f_neg = 0   #Guessed noise when should have been galaxy
 
-    #Recieve supervised data. Take 4 times as many as recieving uint32s (kdu_uint32s)
-    #and convert
+    #Recieve supervised data. Take 4 times as many as recieving uint32s
+    #(kdu_uint32s) and convert
     recieving = True
     image_batch = []
     label_batch = []
@@ -221,7 +226,8 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             units_num = units_num + 1
 
         #If at end of data feed or if the batch is full then feed to graph
-        batch_ready = len(image_batch) == batch_size and len(label_batch) == batch_size;
+        batch_ready =   len(image_batch) == batch_size and \
+                        len(label_batch) == batch_size;
         if batch_ready or (not recieving and len(image_batch) != 0):
             #Turn recieved info into a feeder dictionary
             feed_dict = {
@@ -273,20 +279,22 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             tableGal.set_cols_width([11, 7, 7, 7, 7])
             tableGal.set_cols_align(['r', 'r', 'r', 'r', 'r'])
             tableGal.add_rows([
-                                ['GAL_PREDs', 'T', 'F', 'T+F', '%'],
+                ['GAL_PREDs', 'T', 'F', 'T+F', '%'],
 
-                                ['BATCH_' + str(batch_num),
-                                batch_t_pos,
-                                batch_f_pos,
-                                batch_t_pos + batch_f_pos,
-                                "{0:.4f}".format(100*batch_t_pos/(batch_t_pos + batch_f_neg)) if (batch_t_pos + batch_f_neg != 0) else "-"],
+                ['BATCH_' + str(batch_num),
+                batch_t_pos,
+                batch_f_pos,
+                batch_t_pos + batch_f_pos,
+                "{0:.4f}".format(100*batch_t_pos/(batch_t_pos + batch_f_neg)) \
+                    if (batch_t_pos + batch_f_neg != 0) else "-"],
 
-                                ['SESSION',
-                                t_pos,
-                                f_pos,
-                                t_pos + f_pos,
-                                "{0:.4f}".format(100*t_pos/(t_pos + f_neg)) if (t_pos + f_neg != 0) else "-"]
-                            ])
+                ['SESSION',
+                t_pos,
+                f_pos,
+                t_pos + f_pos,
+                "{0:.4f}".format(100*t_pos/(t_pos + f_neg)) \
+                    if (t_pos + f_neg != 0) else "-"]
+            ])
             print(tableGal.draw())
 
             #Print tabulated nse data
@@ -295,20 +303,22 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             tableNse.set_cols_width([11, 7, 7, 7, 7])
             tableNse.set_cols_align(['r', 'r', 'r', 'r', 'r'])
             tableNse.add_rows([
-                                ['NSE_PREDs', 'T', 'F', 'T+F', '%'],
+                ['NSE_PREDs', 'T', 'F', 'T+F', '%'],
 
-                                ['BATCH_' + str(batch_num),
-                                batch_t_neg,
-                                batch_f_neg,
-                                batch_t_neg + batch_f_neg,
-                                "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_pos)) if (batch_t_neg + batch_f_pos != 0) else "-"],
+                ['BATCH_' + str(batch_num),
+                batch_t_neg,
+                batch_f_neg,
+                batch_t_neg + batch_f_neg,
+                "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_pos)) \
+                    if (batch_t_neg + batch_f_pos != 0) else "-"],
 
-                                ['SESSION',
-                                t_neg,
-                                f_neg,
-                                t_neg + f_neg,
-                                "{0:.4f}".format(100*t_neg/(t_neg + f_pos)) if (t_neg + f_pos != 0) else "-"]
-                            ])
+                ['SESSION',
+                t_neg,
+                f_neg,
+                t_neg + f_neg,
+                "{0:.4f}".format(100*t_neg/(t_neg + f_pos)) \
+                    if (t_neg + f_pos != 0) else "-"]
+            ])
             print(tableNse.draw())
 
             #Print tabulated summary
@@ -317,20 +327,20 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             tableSum.set_cols_width([11, 7, 7, 7, 7])
             tableSum.set_cols_align(['r', 'r', 'r', 'r', 'r'])
             tableSum.add_rows([
-                                ['ALL_PREDs', 'T', 'F', 'T+F', '%'],
+                ['ALL_PREDs', 'T', 'F', 'T+F', '%'],
 
-                                ['BATCH_' + str(batch_num),
-                                batch_t_pos + batch_t_neg,
-                                batch_f_pos + batch_f_neg,
-                                batch_t_neg + batch_f_neg + batch_t_pos + batch_f_pos,
-                                "{0:.4f}".format(100*(batch_t_pos + batch_t_neg)/len(image_batch)) ],
+                ['BATCH_' + str(batch_num),
+                batch_t_pos + batch_t_neg,
+                batch_f_pos + batch_f_neg,
+                batch_t_neg + batch_f_neg + batch_t_pos + batch_f_pos,
+                "{0:.4f}".format(100*(batch_t_pos + batch_t_neg)/len(image_batch)) ],
 
-                                ['SESSION',
-                                t_pos + t_neg,
-                                f_pos + f_neg,
-                                t_neg + f_neg + t_pos + f_pos,
-                                "{0:.4f}".format(100*(t_pos + t_neg)/units_num) ]
-                            ])
+                ['SESSION',
+                t_pos + t_neg,
+                f_pos + f_neg,
+                t_neg + f_neg + t_pos + f_pos,
+                "{0:.4f}".format(100*(t_pos + t_neg)/units_num) ]
+            ])
             print(tableSum.draw())
             print("")
 
@@ -354,6 +364,13 @@ def softmax(arr):
     """Compute softmax values for each sets of scores in x."""
     e_arr = np.exp(arr - np.max(arr))
     return e_arr / e_arr.sum()
+
+#Helper to process a probability map to highlight regions that most likely
+#have galaxies in them
+def post_process_prob_map(prob_map):
+    print("TODO")
+
+    return prob_map
 
 #Helper to plot an evaluation probability map
 def plot_prob_map(prob_map):
@@ -440,7 +457,7 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
     )
 
     #For tracking time and progress
-    inference_start = datetime.now()
+    evaluation_start = datetime.now()
     count = 0
     expected = units_per_component*region_depth #Images per freq frame*freq frame for total expected images
 
@@ -472,8 +489,8 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
                 break
         else:
             #Announce finish and time taken (remove timeout)
-            inference_duration = datetime.now() - inference_start - timedelta(seconds=timeout)
-            print("\r100.000% complete (" + str(inference_duration) + ")")
+            evaluation_duration = datetime.now() - evaluation_start - timedelta(seconds=timeout)
+            print("\r100.000% complete (" + str(evaluation_duration) + ")")
             print("No image data found in socket. Ending recv'ing loop")
             recieving = False
 
@@ -550,7 +567,7 @@ def compile_for_ncs(graph_name):
     saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
 
     #Save without placeholders
-    saver.save(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs")
+    saver.save(sess, GRAPHS_FOLDER+"/"+graph_name+"/"+graph_name+"-for-ncs")
 
     #Finish session
     sess.close()
@@ -560,9 +577,10 @@ def compile_for_ncs(graph_name):
     subprocess.call([
         'mvNCCompile',
         (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.meta"),
+        "-s=" + str(SHAVES),
         "-in=" + INPUT_NAME,
-        "-on=" + OUTPUT_NCS_NAME, #No predictor in eval graph because softmax broken
-        "-o=" + GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph",
+        "-on=" + OUTPUT_NCS_NAME,
+        "-o=" + GRAPHS_FOLDER+"/"+graph_name+"/"+graph_name+"-for-ncs.graph",
         "-is", str(INPUT_WIDTH), str(INPUT_HEIGHT)
     ]
     #,stdout=open(os.devnull, 'wb')  #Suppress output
@@ -576,6 +594,13 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                                     region_height,     #Height of region to evaluate
                                     region_depth,      #Depth of region to evaluate
                                     units_per_component):   #Needed to calculate expected units
+
+    #Ensure there is at least one NCS
+    device_name_list = mvnc.EnumerateDevices()
+    num_devices = len(device_name_list)
+    if num_devices == 0:
+        print("No devices found, exiting")
+        sys.exit()
 
     #Compile a copy of the evaluation graph for running on the ncs
     compile_for_ncs(graph_name)
@@ -604,26 +629,25 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
     )
 
     #Images per freq frame*freq frame for total expected images
-    expected = units_per_component*region_depth
-    shared_count = 0
+    expected    = units_per_component*region_depth
+    recieved    = 0
+    inferenced  = 0
 
-    #Ensure there is at least one NCS
-    print("Finding and opening device(s)")
-    device_name_list = mvnc.EnumerateDevices()
-    num_devices = len(device_name_list)
-    if num_devices == 0:
-        print("none found! Exiting")
-        sys.exit()
-
-    #For whatever reason multiple allocation must be done like so - thanks ncsdk
+    #Open each device and allocate it a graph
+    print(  str(num_devices) + \
+            " device(s) found, initialising them for inferencing task")
     device_handles = []
     graph_handles = []
+    utilisation = []    #For tracking each device's utilisation
     for d in range(num_devices):
         #Get device
         device_handles.append(mvnc.Device(device_name_list[d]))
 
         #Open device
         device_handles[d].OpenDevice()
+
+        #Create a metrics profile for this NCS
+        utilisation.append(0)
 
         #Allocate the compiled graph onto the device and get a reference
         #for later deallocation
@@ -640,43 +664,39 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-    timeout = 0.5       #How many seconds to wait before finishing
+    timeout = 0.5       #How many seconds to wait before timing out recv
 
-    #Begin inference timer
-    inference_start = datetime.now()
+    #Begin inference timer and intialise other metrics
+    evaluation_start = datetime.now()
+    inferencing_duration = timedelta(0)
+    load_tensor_duration = timedelta(0)
 
     #Load image data from socket while there is image data to load
-    recieving = True
-    while recieving:
-        #When ready then recv location of image in evaluation space
-        image_loc = None
-        ready = select.select([sock], [], [], timeout)
-        if ready[0]:
-            #If 3*4 units are recieved then this is an image's location
-            image_loc_bytes = sock.recv(3*4)
-            image_loc = byte_string_to_int_array(image_loc_bytes)
-            if len(image_loc) != 3 or not image_loc:
-                #No data found in socket, stop recving
-                print("Error: image location data not recv'd correctly, finishing early")
-                break
+    curr_device = 0
+    inferencing = False  #Whether or not data reading inferences this loop
+    while inferenced != expected:
+        if not inferencing:
+            #When ready then recv location of image in evaluation space
+            image_loc = None
+            ready = select.select([sock], [], [], timeout)
+            if ready[0]:
+                #If 3*4 units are recieved then this is an image's location
+                image_loc_bytes = sock.recv(3*4)
+                image_loc = byte_string_to_int_array(image_loc_bytes)
 
-        #When ready then recv
-        image_input = None
-        ready = select.select([sock], [], [], timeout)
-        if ready[0]:
-            #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
-            image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
-            image_input = byte_string_to_int_array(image_bytes)
-            if len(image_input) != INPUT_WIDTH*INPUT_HEIGHT or not image_input:
-                #No data found in socket, stop recving
-                print("Error: image data not recv'd correctly, finishing early")
-                break
-        else:
-            #No longer reciving, may still be inferencing
-            recieving = False
+            #When ready then recv
+            image_input = None
+            ready = select.select([sock], [], [], timeout)
+            if ready[0]:
+                #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
+                image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
+                image_input = byte_string_to_int_array(image_bytes)
 
-        #If something was recieved from socket
-        if recieving:
+            #Error check
+            if image_loc == None or image_input == None:
+                print("Error: image or location not recv'd correctly, exiting")
+                sys.exit()
+
             #Make the recv'd data graph compatible
             image_input = make_compatible(image_input, False)
             #Explicitly make into '1' batch tensor, NCS won't take it as a list
@@ -687,93 +707,84 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
             image_bry   = image_tly + INPUT_HEIGHT
             image_f     = image_loc[2][0]
             #CSV encoding location
-            image_name  = str(image_tlx) + ":" +    \
-                          str(image_brx) + ":" +    \
-                          str(image_tly) + ":" +    \
-                          str(image_bry) + ":" +    \
-                          str(image_f)
+            image_loc_string   =  str(image_tlx) + ":" +    \
+                                  str(image_brx) + ":" +    \
+                                  str(image_tly) + ":" +    \
+                                  str(image_bry) + ":" +    \
+                                  str(image_f)
 
-            #Try to load data onto an NCS
-            loaded = False
-            while not loaded:
-                #Go through all NCS' and attempt to load this new data
-                for graph_ref in graph_handles:
-                    #Try to load new data
-                    loaded = graph_ref.LoadTensor(image_input, image_name)
+            #Load data into NCS' and time it
+            graph_ref = graph_handles[curr_device]
+            load_tensor_start = datetime.now()
+            status = graph_ref.LoadTensor(image_input, image_loc_string)
+            load_tensor_duration += (datetime.now() - load_tensor_start)
 
-                    #If it failed then try to get inference of what must be
-                    #currently loaded onto device
-                    if not loaded:
-                        output, userobj = graph_ref.GetResult()
+            #Since in non-blocking mode, above will return false if busy
+            if not status:
+                print("Error: attempting to load tensor onto inferencing device")
+                sys.exit()
 
-                        if userobj == None:
-                            #If no inference then still inferencing, so try next NCS
-                            continue
-                        else:
-                            #Otherwise process inference results. Get location
-                            #of the processed area through the userobj string
-                            loc = [int(x) for x in userobj.split(':')]
+            #This NCS has been utilised
+            utilisation[curr_device] += 1
 
-                            #One hot encoding, want probability of class 1 (galaxy).
-                            #Note ncsdk doesn't support the predictor layer which softmaxes
-                            #the last dense layer to give class probability, so manual
-                            #softmax must be done in its place
-                            pred = softmax(output)[1]
-
-                            #Incremnt and report shared count
-                            shared_count += 1
-                            print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
-
-                            #Write information into heatmap. Likelihood is simply added onto
-                            #heat map at each pixel
-                            prob_ag_map[loc[0]:loc[1],
-                                        loc[2]:loc[3],
-                                        loc[4]] += pred
-                            sample_map[ loc[0]:loc[1],
-                                        loc[2]:loc[3],
-                                        loc[4]] += 1.0
-
-                    else:
-                        #Otherwise it succeeded, so stop trying to load this image
-                        #and go to next one
-                        break
-
-    #If here then all of the data has been recv'd from the C++ kakadu wrapper,
-    #so just wait for the last few inferences
-    while(shared_count.value != expected):
-        #Go through all NCS' and attempt to get inference results
-        for graph_ref in graph_handles:
-            #Try to get inference results and check if inference is yet complete
-            output, userobj = graph_ref.GetResult()
-
-            if userobj == None:
-                #If no inference then still inferencing, so try next NCS
+            #If no more images to load extract the remaining inferences
+            recieved += 1
+            if recieved == expected:
+                curr_device = 0
+                inferencing = True
                 continue
-            else:
-                #Otherwise process inference results. Get location
-                #of the processed area through the userobj string
-                loc = [int(x) for x in userobj.split(':')]
+        else:
+            #Get results from NCS'. Note userobj is used for image location
+            graph_ref = graph_handles[curr_device]
+            inferencing_start = datetime.now()
+            output, image_loc_string = graph_ref.GetResult()
+            inferencing_duration += (datetime.now() - inferencing_start)
 
-                #One hot encoding, want probability of class 1 (galaxy).
-                #Note ncsdk doesn't support the predictor layer which softmaxes
-                #the last dense layer to give class probability, so manual
-                #softmax must be done in its place
-                pred = softmax(output)[1]
+            #Error check (both will return None or both with return correctly)
+            if image_loc_string == None:
+                print(  "Error: couldn't get inference from graph on NCS:" + \
+                        str(curr_device))
+                sys.exit()
 
-                #Incremnt and report shared count
-                shared_count += 1
-                print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete", end="")
+            #Get location of the processed area through the userobj string
+            loc = [int(x) for x in image_loc_string.split(':')]
 
-                #Write information into heatmap. Likelihood is simply added onto
-                #heat map at each pixel
-                prob_ag_map[loc[0]:loc[1],
-                            loc[2]:loc[3],
-                            loc[4]] += pred
-                sample_map[ loc[0]:loc[1],
-                            loc[2]:loc[3],
-                            loc[4]] += 1.0
+            #One hot encoding, want probability of class 1
+            #(galaxy). Note ncsdk doesn't support the predictor
+            #layer which softmaxes the last dense layer to give
+            #class probability, so manual
+            #softmax must be done in its place
+            pred = softmax(output)[1]
+
+            #Write information into heatmap. Likelihood is
+            #simply added onto heat map at each pixel
+            prob_ag_map[loc[0]:loc[1],
+                        loc[2]:loc[3],
+                        loc[4]] += pred
+            sample_map[ loc[0]:loc[1],
+                        loc[2]:loc[3],
+                        loc[4]] += 1.0
+
+            #Increment and report inferences completed
+            inferenced += 1
+            print(  "\r{0:.4f}".format(100*inferenced/expected) \
+                    + "% complete", end="")
+
+        #Move to next device
+        curr_device = (curr_device + 1) % num_devices
+
+        #If back at the zeroth device (just finished the last device)
+        #then switch from inferencing to loading (not inferencing) and
+        #vice versa
+        if curr_device == 0:
+            inferencing = not inferencing
+
+    #Inferencing now complete, calculate metrics for later reporting
+    evaluation_duration =   datetime.now() - evaluation_start - \
+                            timedelta(seconds=timeout)
 
     #Deallocate graphs and close devices
+    print("\nDeallocating network graphs and closing device(s)")
     for d in range(num_devices):
         #Finished recieving, deallocate the graph from the device
         graph_handles[d].DeallocateGraph()
@@ -781,21 +792,37 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
         #Close opened device
         device_handles[d].CloseDevice()
 
-    #Inferencing now complete
-    inference_duration = datetime.now() - inference_start - timedelta(seconds=timeout)
-    print("\r{0:.4f}".format(100*shared_count.value/expected) + "% complete (" + str(inference_duration) + ")")
+        #Calcalate device's utilisation (what percentage of images it inferenced)
+        utilisation[d] /= expected
+        utilisation[d] *= 100   #As a percentage
 
     #Normalise the probability by dividing the aggregate prob by the amount
     #of predictions/samples made at that pixel. Handle divide by zeroes which may
     #occur along edges
-    print("Normalising prediction map")
+    print("Processing and plotting probabilities")
     prob_map = np.divide(   prob_ag_map, sample_map,
                             out=np.zeros_like(prob_ag_map),
                             where=sample_map!=0)
 
+    #Run post processing to enhance galactic probabilites                        
+    prob_map = post_process_prob_map(prob_map)
+
     #Plot data or visualisation
-    print("Plotting 2D component prediction map(s)")
     plot_prob_map(prob_map)
+
+    #Print metrics
+    processing_duration =   evaluation_duration - \
+                            load_tensor_duration - \
+                            inferencing_duration
+    print("Time spent:")
+    print("\t-evaluating (total):           " + str(evaluation_duration))
+    print("\t-recieving & formatting input: " + str(processing_duration))
+    print("\t-loading tensors:              " + str(load_tensor_duration))
+    print("\t-inferencing:                  " + str(inferencing_duration))
+
+    print("Precentage evaluated by device:")
+    for d in range(num_devices):
+        print("\t-"+device_name_list[d]+" = {0:.2f}".format(utilisation[d])+"%")
 
 #Plots the convolutional filter-weights/kernel for a given layer using matplotlib
 def plot_conv_weights(graph_name, scope, start_conv, final_conv, suffix):
@@ -805,7 +832,7 @@ def plot_conv_weights(graph_name, scope, start_conv, final_conv, suffix):
     #Begin a tensorflow session
     sess = tf.Session()
 
-    #Load the graph to be trained
+    #Load the graph to be plotted
     saver = restore_model(graph_name, sess)
 
     #Get the weights

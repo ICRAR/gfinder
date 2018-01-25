@@ -58,6 +58,7 @@ char *JPX_FILEPATH    = NULL;
 bool IS_TRAIN         = false;
 bool IS_VALIDATE      = false;
 bool IS_EVALUATE      = false;
+bool IS_OUTPUT_IMAGES = false;
 char *GRAPH_NAME      = NULL;
 int START_COMPONENT_INDEX = 0;
 int FINAL_COMPONENT_INDEX = 0;
@@ -452,6 +453,13 @@ void* init_embedded_python(){
 //Finalises embeeded python (closing interpreter)
 void end_embedded_python(){
   Py_Finalize();
+}
+
+//Simply saves a region of the input datacube as specified by parameters
+void save_data_as_image(int x, int y, int w, int h, int f){
+  //Decompress
+
+  //Call python
 }
 
 //Called when training a graph is specified. Note a reference to the jpx source
@@ -932,7 +940,7 @@ int main(int argc, char **argv){
   int arg;
 
   //Run getopt loop
-  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:nuh")) != -1){
+  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:nuho")) != -1){
     switch(arg){
       case 'f': //Filepath to image
         JPX_FILEPATH = optarg;
@@ -1015,13 +1023,16 @@ int main(int argc, char **argv){
       case 'n': //Whether or not to use a plugged in NCS (otherwise will use CPU)
         NCS_EVALUATION = true;
         break;
-      case 'u':
+      case 'u': //Print usage
         print_usage();
         exit(EXIT_SUCCESS);
         break;
-      case 'h':
+      case 'h': //Print help statement
         print_usage();
         exit(EXIT_SUCCESS);
+        break;
+      case 'o': //Output corresponding to evaluation
+        IS_OUTPUT_IMAGES = true;
         break;
       case '?':
         //getopt handles error print statements
