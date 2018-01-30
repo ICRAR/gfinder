@@ -194,13 +194,13 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
             //"Your labels will make a fine addition to my ... collection"
             labels.push_back(l);
 
-            /*
             //Also push back slightly translated labels (<10px each way for better
             //generalisation)
-            int translation = 4;
+            int translation = 8;
             int x;
             int y;
             for(int i = 0; i < 4; i++){
+              //All different directions of translation
               if(i == 0){
                 x = -1; y = 0;
               }else if(i == 1){
@@ -221,7 +221,6 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
               translated_l.isGalaxy = l.isGalaxy;
               labels.push_back(translated_l);
             }
-            */
           }
         }
         //Case closed
@@ -456,10 +455,154 @@ void end_embedded_python(){
 }
 
 //Simply saves a region of the input datacube as specified by parameters
-void save_data_as_image(int x, int y, int w, int h, int f){
-  //Decompress
+bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
+                        int x, int y, int w, int h, int f)
+{
+  //Construct a region from the given data
+  kdu_dims region;
+  region.access_pos()->set_x(x);
+  region.access_size()->set_x(w);
+  region.access_pos()->set_y(y);
+  region.access_size()->set_y(h);
 
-  //Call python
+  //Decompress over labeled frames at the correct
+  //spacial coordinates using kakadu decompressor
+  kdu_region_decompressor decompressor;
+
+  int component_index = f;
+
+  //TODO: variable
+  int discard_levels = 0;
+
+  //Get safe expansion factors for the decompressor
+  //Safe upper bounds & minmum product returned into the following variables
+  double min_prod;
+  double max_x;
+  double max_y;
+  decompressor.get_safe_expansion_factors(
+    codestream, //The codestream being decompressed
+    NULL,  //Codestream's channel mapping (null because specifying index)
+    component_index,    //Check over all components
+    discard_levels,     //DWT levels to discard (resolution reduction)
+    min_prod,
+    max_x,
+    max_y
+  );
+
+  kdu_dims component_dims;  //Holds expanded component coordinates (post discard)
+  kdu_dims incomplete_region;  //Holds the region that is incomplete after processing run
+  kdu_dims new_region;  //Holds the region that is rendered after a processing run
+
+  //Get the expansion factors for expansion TODO: non 1x expansion
+  kdu_coords scale_num;
+  scale_num.set_x(1); scale_num.set_y(1);
+  kdu_coords scale_den;
+  scale_den.set_x(1); scale_den.set_y(1);
+
+  //Get the size of the complete component (after discard levels decrease
+  //in resolution is applied) on the rendering canvas
+  component_dims = decompressor.get_rendered_image_dims(
+    codestream, //The codestream being decompressed
+    NULL,       //Codestream's channel mapping (null because specifying index)
+    component_index,  //Component being decompressed
+    discard_levels,   //DWT levels to discard (resolution reduction)
+    scale_num,
+    scale_den
+  );
+
+  //Should a region not fully be included in the image then cause error
+  //skip to the next label
+  if( region.pos.x < component_dims.pos.x ||
+      region.pos.x + region.size.x > component_dims.pos.x + component_dims.size.x ||
+      region.pos.y < component_dims.pos.y ||
+      region.pos.y + region.size.y > component_dims.pos.y + component_dims.size.y){
+        cout << "Error: cannot build comparison image if requested bounds exceed"
+          << " codestream bounds\n";
+        return false;
+  }
+
+  //Create a buffer to send the data across into
+  int bufsize = w*h;
+  kdu_uint32 buffer[bufsize];
+
+  //Loop decompression to ensure that amount of DWT discard levels doesn't
+  //exceed tile with minimum DWT levels
+  do{
+    //Set up decompressing run
+    //cout << "Starting decompression\n";
+    decompressor.start(
+      codestream, //The codestream being decompressed
+      NULL,  //Codestream's channel mapping (null because specifying index)
+      component_index,  //Component being decompressed
+      discard_levels,   //DWT levels to discard (resolution reduction)
+      INT_MAX,    //Max quality layers
+      region,      //Region to decompress
+      scale_num,  //Expansion factors
+      scale_den,
+      &env        //Multi-threading environment
+    );
+
+    //Decompress until buffer is filled (block is fully decompressed)
+    //cout << "Processing\n";
+    incomplete_region = component_dims;
+    while(
+      decompressor.process(     //Buffer to write into:
+        (kdu_int32 *) buffer,
+        region.pos,             //Buffer origin
+        region.size.x,          //Row gap
+        256000,                 //Suggesed increment
+        0,                      //Max pixels in region
+        incomplete_region,
+        new_region
+      )
+    );
+    //Finalise decompressing run
+    //cout << "Finishing decompression\n";
+    decompressor.finish();
+
+  //Render until there is no incomplete region remaining
+  }while(!incomplete_region.is_empty());
+
+  //Call python to recieve buffer and plot it
+  //Get filename
+  PyObject* py_name   = PyUnicode_FromString((char*)"cnn");
+  PyErr_Print();
+
+  //Import file as module
+  PyObject* py_module = PyImport_Import(py_name);
+  PyErr_Print();
+
+  //Get function name from module depending on if validating or training
+  PyObject* py_func;
+  py_func = PyObject_GetAttrString(py_module, (char*)"save_data_as_comparison_image");
+  PyErr_Print();
+
+  //For converting array
+  npy_intp dim = w*h;
+
+  //Parameters to be passed to function
+  PyObject* params = Py_BuildValue("(O, i, i, i, i, i)",
+    PyArray_SimpleNewFromData(
+      1,
+      &dim,
+      NPY_UINT32,
+      (void *)buffer
+    ),
+    x,
+    w,
+    y,
+    h,
+    f
+  );
+  PyErr_Print();
+
+  //Call function with the graph to train on and the port to listen for
+  //training data on
+  PyObject_CallObject(py_func, params);
+  PyErr_Print();
+
+  //Return success
+  return true;
 }
 
 //Called when training a graph is specified. Note a reference to the jpx source
@@ -691,8 +834,8 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
   //possible region is fed to the neural network graph to test if it holds a
   //galaxy. The result is crunched to find the area that most likely holds
   //a galaxy based on the results for nearby regions
-  int stride_x = 8;
-  int stride_y = 8;
+  int stride_x = 4;
+  int stride_y = 4;
 
   //For tracking progress
   int steps_x = floor((LIMIT_RECT_W - INPUT_WIDTH)/stride_x) + 1;
@@ -743,13 +886,16 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
 
     //Call function with the graph to train on and the port to listen for
     //training data on
-    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, i)",
+    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, i, i, i, i)",
       GRAPH_NAME,
       PORT_NO,        //Where to get data
       LIMIT_RECT_W,   //Following so python knows how big to make eval heatmap
       LIMIT_RECT_H,
       (FINAL_COMPONENT_INDEX - START_COMPONENT_INDEX + 1),
-      units_per_component
+      units_per_component,
+      LIMIT_RECT_X,
+      LIMIT_RECT_Y,
+      START_COMPONENT_INDEX
     ));
     PyErr_Print();
 
@@ -918,6 +1064,15 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
 
     //Wait for death of child (python evaluation process)
     while(wait(&status) != pid);
+
+    //Compare prob map to original for each component AFTER inferencing
+    //as completed
+    for(int f = START_COMPONENT_INDEX; f <= FINAL_COMPONENT_INDEX; f++){
+      save_data_as_image( codestream, env,
+                          LIMIT_RECT_X, LIMIT_RECT_Y,
+                          LIMIT_RECT_W, LIMIT_RECT_H,
+                          f);
+    }
 
   }else{
     //Fork failure

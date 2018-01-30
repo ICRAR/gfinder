@@ -17,6 +17,9 @@ from texttable import Texttable             #For outputting
 import math                                 #For logs
 import time                                 #For debugging with catchup
 from datetime import datetime, timedelta    #For timing inference runs
+import threading                            #For parallel inferencing
+from multiprocessing import Queue, Value    #For sharing data between threads
+import ctypes as c                          #For sharing numpy arrays
 import subprocess                           #For compiling graphs
 import socket                               #For IPC
 import select                               #For waiting for socket to fill
@@ -81,7 +84,7 @@ def apply_frequency_cutoff(img_matrix, cutoff):
 
 #Uniquely saves a figure of the imgage represented by the supplied array
 #in the output folder
-def save_array_as_fig(img_array, name):
+def save_array_as_fig(img_array, name, start_x=0, start_y=0):
     #Create graph to ensure that block was read correctly
     fig = plt.figure(name, figsize=(15, 15), dpi=80)  #dims*dpi = res
 
@@ -91,15 +94,18 @@ def save_array_as_fig(img_array, name):
 
     #Plot
     ax = plt.gca()
-    ax.set_aspect('equal', adjustable='box')    #Aspect ratio
 
     ax.set_xticks(np.arange(0, w, math.floor(w/10)))  #Ticks
     ax.set_xticks(np.arange(0, w, 1), minor = True)
+    #labels
+    ax.set_xticklabels(np.arange(start_x, start_x + w, math.floor(w/10)))
 
     ax.set_yticks(np.arange(0, h, math.floor(h/10)))
     ax.set_yticks(np.arange(0, h, 1), minor = True)
+    #labels
+    ax.set_yticklabels(np.arange(start_y, start_y + h, math.floor(h/10)))
 
-    #Colourisation mapped to [0,255]
+    #Colourisation mapped to [0,1]
     plt.imshow( np.uint8(img_array), cmap="Greys_r",
                 vmin=0, vmax=255,
                 interpolation='nearest')
@@ -113,9 +119,14 @@ def save_array_as_fig(img_array, name):
 #Transforms the standard uint8 1 channel image gotten from the Kakadu SDK into
 #a three channel RGB (redundant channels) half precision float (float16) image
 #such that it is compatible with the Movidius NCS architecture
-def make_compatible(image_data, save_image):
+def make_compatible(image_data,
+                    save_image=False,
+                    width=INPUT_WIDTH,
+                    height=INPUT_HEIGHT,
+                    duplicate_channels=True,
+                    scale_to_int8=True):
     #Reshape to placeholder dimensions
-    output = np.reshape(image_data, (INPUT_WIDTH, INPUT_HEIGHT))
+    output = np.reshape(image_data, (width, height))
 
     #Cast to 8-bit unsigned integer
     output = np.uint8(output)
@@ -125,10 +136,15 @@ def make_compatible(image_data, save_image):
         save_array_as_fig(output, 'test')
 
     #Now cast
-    output = np.float16(output)/255.0
+    output = np.float16(output)
 
-    #Add two more channels to get RBG
-    output = np.dstack([output]*3)
+    #And scale if required
+    if scale_to_int8:
+        output = output/255.0
+
+    #Add two more channels to get RBG if required
+    if duplicate_channels:
+        output = np.dstack([output]*3)
 
     #Give it back
     return output
@@ -144,8 +160,18 @@ def byte_string_to_int_array(bytes):
 
 #Facilitates the saving of an area of input data for comparison with evaluation
 #process
-def save_data_as_comparison_image(image_date, name):
-    print("TODO")
+def save_data_as_comparison_image(image_data, x, w, y, h, f):
+    #Make compatible
+    image_data = make_compatible(   image_data, width=w, height=h,
+                                    duplicate_channels=False,
+                                    scale_to_int8=False)
+
+    #Create name
+    name = "original-" + str(x) + "-" + str(y)  + "-" + str(w) + "-" + \
+            str(h) + "-" + str(f)
+
+    #Save array as fig
+    save_array_as_fig(image_data, name, start_x=x, start_y=y)
 
 #Boots up a concurrently running client that keeps the trainable graph in memory
 #to speed up training time. Updates depending on argument at the end of its run
@@ -368,15 +394,33 @@ def softmax(arr):
 #Helper to process a probability map to highlight regions that most likely
 #have galaxies in them
 def post_process_prob_map(prob_map):
-    print("TODO")
+    #Get dimensions
+    width   = prob_map.shape[0]
+    height  = prob_map.shape[1]
+    depth   = prob_map.shape[2]
+
+    #Ignore poorly sampled edges
+    ignore_offset = 8
+    prob_map[0:ignore_offset,:,:] = 0
+    prob_map[(width-ignore_offset):(width),:,:] = 0
+    prob_map[:,0:ignore_offset,:] = 0
+    prob_map[:,(height-ignore_offset):(height),:] = 0
+
+    #Apply threshold for clarity
+    threshold = prob_map < 0.4
+    prob_map[threshold] = 0
+
+    #Increase prob for high prob areas that bleed through freq frames
+
 
     return prob_map
 
 #Helper to plot an evaluation probability map
-def plot_prob_map(prob_map):
+def plot_prob_map(prob_map, start_x, start_y, start_f):
     #Save the probability map to output in 2d componetn slices
     for f in range(prob_map.shape[2]):
-        fig = plt.figure("component-" + str(f), figsize=(15, 15), dpi=80)  #dims*dpi = res
+        #dims*dpi = res
+        fig = plt.figure("component-" + str(f), figsize=(15, 15), dpi=80)
 
         #Bounds
         w = prob_map.shape[0]
@@ -384,20 +428,26 @@ def plot_prob_map(prob_map):
 
         #Plot
         ax = plt.gca()
-        ax.set_aspect('equal', adjustable='box')    #Aspect ratio
+        ax.set_aspect('auto', adjustable='box')    #Aspect ratio
 
         ax.set_xticks(np.arange(0, w, math.floor(w/10)))  #Ticks
         ax.set_xticks(np.arange(0, w, 1), minor = True)
+        #labels
+        ax.set_xticklabels(np.arange(start_x, start_x + w, math.floor(w/10)))
 
         ax.set_yticks(np.arange(0, h, math.floor(h/10)))
         ax.set_yticks(np.arange(0, h, 1), minor = True)
+        #labels
+        ax.set_yticklabels(np.arange(start_y, start_y + h, math.floor(h/10)))
 
         #Colourisation mapped to [0,1], as this is a probability map
-        plt.imshow( prob_map[:,:,f], cmap="bone", vmin=0.0, vmax=1.0,
+        plt.imshow( prob_map[:,:,f], cmap="Greys_r", vmin=0.0, vmax=1.0,
                     interpolation='nearest')
 
         #Label and save
-        fig.savefig("output/" + "component-" + str(f))
+        name = "probmap-" + str(start_x) + "-" + str(start_y) + "-" + str(w) + \
+                "-" + str(h) + "-" + str(start_f + f)
+        fig.savefig("output/" + name)
 
         #Explicity close figure for memory usage
         plt.close(fig)
@@ -408,8 +458,10 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
                                     region_width,      #Width of region to evaluate
                                     region_height,     #Height of region to evaluate
                                     region_depth,      #Depth of region to evaluate
-                                    units_per_component):   #How many images at each frequency
-
+                                    units_per_component,   #How many images at each frequency
+                                    start_x,
+                                    start_y,
+                                    start_f):
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
@@ -534,9 +586,12 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
                             out=np.zeros_like(prob_ag_map),
                             where=sample_map!=0)
 
+    #Process
+    prob_map = post_process_prob_map(prob_map)
+
     #Plot data or visualisation
     print("Plotting 2D component prediction map(s)")
-    plot_prob_map(prob_map)
+    plot_prob_map(prob_map, start_x, start_y, start_f)
 
     #Close tensorflow session
     sess.close()
@@ -586,6 +641,78 @@ def compile_for_ncs(graph_name):
     #,stdout=open(os.devnull, 'wb')  #Suppress output
     );
 
+#Manages te inferences on one NCS
+def run_NCS_parallel(   device_number, graph_handle, queue, utilisation,
+                        num_inferenced, num_expected,
+                        prob_ag_map, sample_map):
+
+    #Has processing started
+    started = False
+
+    #Iterate over data
+    while num_inferenced.value != num_expected:
+        #Get data from shared queue
+        try:
+            #Get data while blocking briefly
+            data = queue.get(True, 1)
+        except:
+            #Check if queue is empty, as NCS' are unreliable and some units
+            #may not have been processed
+            if started and queue.empty:
+                break
+
+            #Otherwise its likely that another thread beat this thread to last
+            #datum in the queue, continue into finish
+            continue
+
+        #Track the number of images processed by this device
+        utilisation.value += 1
+
+        #Once one object is found in the queue processing has started
+        if not started:
+            started = True
+
+        #Attempt to load data
+        try:
+            #Load into tensor
+            graph_handle.LoadTensor(data[0], "")
+        except:
+            pass
+
+        #Attempt to inference data
+        try:
+            #Get inference
+            output, image_loc_string = graph_handle.GetResult()
+
+            #Get location of the processed area through the userobj string
+            loc = data[1]
+
+            #One hot encoding, want probability of class 1
+            #(galaxy). Note ncsdk doesn't support the predictor
+            #layer which softmaxes the last dense layer to give
+            #class probability, so manual
+            #softmax must be done in its place
+            pred = softmax(output)[1]
+
+            #Write information into heatmap. Likelihood is
+            #simply added onto heat map at each pixel
+            prob_ag_map[loc[0]:loc[1],
+                        loc[2]:loc[3],
+                        loc[4]] += pred
+            sample_map[ loc[0]:loc[1],
+                        loc[2]:loc[3],
+                        loc[4]] += 1.0
+
+        except:
+            pass
+
+        #Increment number inferenced
+        num_inferenced.value += 1
+
+        #Progress report
+        print(  "\r{0:.4f}".format(100*(num_inferenced.value/num_expected)) \
+                + "% complete", end="")
+
 #Boots up one NCS, loads a compiled version of the graph onto it and begins
 #running inferences on it. Supports inferencing a 3d area that must be supplied
 def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
@@ -593,8 +720,10 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
                                     region_width,      #Width of region to evaluate
                                     region_height,     #Height of region to evaluate
                                     region_depth,      #Depth of region to evaluate
-                                    units_per_component):   #Needed to calculate expected units
-
+                                    units_per_component,  #Needed to calculate expected units
+                                    start_x,
+                                    start_y,
+                                    start_f):
     #Ensure there is at least one NCS
     device_name_list = mvnc.EnumerateDevices()
     num_devices = len(device_name_list)
@@ -616,9 +745,8 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
         sys.exit()
 
     #Data will need to be stored in a heat map - allocate memory for this
-    #data structure. Probability aggregate is the sum of each predictions made
-    #that include that pixel. Samples are the number of predictions made for
-    #that pixel. This allows normalised probability map as output
+    #data structure. Wrap the raw IPC shared memory in a numpy array for ease
+    #of use
     prob_ag_map = np.zeros(
         shape=(region_width, region_height, region_depth),
         dtype=float
@@ -629,16 +757,15 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
     )
 
     #Images per freq frame*freq frame for total expected images
-    expected    = units_per_component*region_depth
-    recieved    = 0
-    inferenced  = 0
+    num_expected   = units_per_component*region_depth
+    num_received   = 0
+    num_inferenced = Value('i', 0)
 
     #Open each device and allocate it a graph
     print(  str(num_devices) + \
             " device(s) found, initialising them for inferencing task")
     device_handles = []
     graph_handles = []
-    utilisation = []    #For tracking each device's utilisation
     for d in range(num_devices):
         #Get device
         device_handles.append(mvnc.Device(device_name_list[d]))
@@ -646,17 +773,42 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
         #Open device
         device_handles[d].OpenDevice()
 
-        #Create a metrics profile for this NCS
-        utilisation.append(0)
+        #Print device's optimisations
+        opt_list = device_handles[d].GetDeviceOption(mvnc.DeviceOption.OPTIMISATION_LIST)
+        #print(opt_list)
 
         #Allocate the compiled graph onto the device and get a reference
         #for later deallocation
         graph_handles.append(device_handles[d].AllocateGraph(graph_file))
 
-        #Set graph options to allow for efficiency with multiple NCS'
-        #this prevents LoadTensor() and GetResult() from blocking (they
-        #will return immediately)
-        graph_handles[d].SetGraphOption(mvnc.GraphOption.DONT_BLOCK, 1)
+        #Set iterations as 1 and confirm with print
+        graph_handles[d].SetGraphOption(mvnc.GraphOption.ITERATIONS, 1)
+        it = graph_handles[d].GetGraphOption(mvnc.GraphOption.ITERATIONS)
+        #print(it)
+
+        #Set graph options so that calls to LoadTensor() block until complete
+        graph_handles[d].SetGraphOption(mvnc.GraphOption.DONT_BLOCK, 0)
+
+    #Set up each device's thread
+    #Prepare to run each NCS in a parallel process with enqueued data
+    threads = []
+    queue = Queue()
+    utilisation = []    #For tracking each device's utilisation
+    for d in range(num_devices):
+        #Count the number of units processed by each device
+        utilisation.append(Value('i', 0))
+
+        #Create the process
+        t = threading.Thread(                                          \
+            target=run_NCS_parallel,                                   \
+            args=(( d, graph_handles[d], queue, utilisation[d],        \
+                    num_inferenced, num_expected,                      \
+                    prob_ag_map, sample_map, )))
+        threads.append(t)
+
+    #Start all processes
+    for t in range(len(threads)):
+        threads[t].start()
 
     #Begin recv'ing data and piping it off to children
     #Child, connect to socket
@@ -667,121 +819,62 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
     timeout = 0.5       #How many seconds to wait before timing out recv
 
     #Begin inference timer and intialise other metrics
-    evaluation_start = datetime.now()
-    inferencing_duration = timedelta(0)
-    load_tensor_duration = timedelta(0)
+    receiving_start     = datetime.now()
+    NCS_start           = datetime.now()
 
-    #Load image data from socket while there is image data to load
-    curr_device = 0
-    inferencing = False  #Whether or not data reading inferences this loop
-    while inferenced != expected:
-        if not inferencing:
-            #When ready then recv location of image in evaluation space
-            image_loc = None
-            ready = select.select([sock], [], [], timeout)
-            if ready[0]:
-                #If 3*4 units are recieved then this is an image's location
-                image_loc_bytes = sock.recv(3*4)
-                image_loc = byte_string_to_int_array(image_loc_bytes)
+    #Begin loading data from C++ server into parallelised NCS'
+    while(num_received != num_expected):
+        #Read an image and its location from the socket
+        #When ready then recv location of image in evaluation space
+        image_loc = None
+        ready = select.select([sock], [], [], timeout)
+        if ready[0]:
+            #If 3*4 units are recieved then this is an image's location
+            image_loc_bytes = sock.recv(3*4)
+            image_loc = byte_string_to_int_array(image_loc_bytes)
 
-            #When ready then recv
-            image_input = None
-            ready = select.select([sock], [], [], timeout)
-            if ready[0]:
-                #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
-                image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
-                image_input = byte_string_to_int_array(image_bytes)
+        #When ready then recv
+        image_input = None
+        ready = select.select([sock], [], [], timeout)
+        if ready[0]:
+            #If INPUT_WIDTH*INPUT_HEIGHT*4 units are recieved then this is an image
+            image_bytes = sock.recv((INPUT_WIDTH*INPUT_HEIGHT)*4)
+            image_input = byte_string_to_int_array(image_bytes)
 
-            #Error check
-            if image_loc == None or image_input == None:
-                print("Error: image or location not recv'd correctly, exiting")
-                sys.exit()
+        #Error check
+        if image_loc == None or image_input == None:
+            print("Error: image or location not recv'd correctly, exiting")
+            sys.exit()
 
-            #Make the recv'd data graph compatible
-            image_input = make_compatible(image_input, False)
-            #Explicitly make into '1' batch tensor, NCS won't take it as a list
-            image_input = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
-            image_tlx   = image_loc[0][0]
-            image_brx   = image_tlx + INPUT_WIDTH
-            image_tly   = image_loc[1][0]
-            image_bry   = image_tly + INPUT_HEIGHT
-            image_f     = image_loc[2][0]
-            #CSV encoding location
-            image_loc_string   =  str(image_tlx) + ":" +    \
-                                  str(image_brx) + ":" +    \
-                                  str(image_tly) + ":" +    \
-                                  str(image_bry) + ":" +    \
-                                  str(image_f)
+        #Track receptions
+        num_received += 1
 
-            #Load data into NCS' and time it
-            graph_ref = graph_handles[curr_device]
-            load_tensor_start = datetime.now()
-            status = graph_ref.LoadTensor(image_input, image_loc_string)
-            load_tensor_duration += (datetime.now() - load_tensor_start)
+        #Make the recv'd data graph compatible
+        image_input = make_compatible(image_input, False)
+        #Explicitly make into '1' batch tensor, NCS won't take it as a list
+        image_input = np.reshape(image_input, (1, INPUT_WIDTH, INPUT_HEIGHT, 3))
+        image_tlx   = image_loc[0][0]
+        image_brx   = image_tlx + INPUT_WIDTH
+        image_tly   = image_loc[1][0]
+        image_bry   = image_tly + INPUT_HEIGHT
+        image_f     = image_loc[2][0]
+        image_loc = [image_tlx, image_brx, image_tly, image_bry, image_f]
 
-            #Since in non-blocking mode, above will return false if busy
-            if not status:
-                print("Error: attempting to load tensor onto inferencing device")
-                sys.exit()
+        #Place into queue
+        queue.put([image_input, image_loc])
 
-            #This NCS has been utilised
-            utilisation[curr_device] += 1
+    #All images recieved from C++ server
+    receiving_duration = datetime.now() - receiving_start
+    print(  "\nAll image data recieved, waiting for " + str(queue.qsize()) + \
+            " images to be inferenced")
 
-            #If no more images to load extract the remaining inferences
-            recieved += 1
-            if recieved == expected:
-                curr_device = 0
-                inferencing = True
-                continue
-        else:
-            #Get results from NCS'. Note userobj is used for image location
-            graph_ref = graph_handles[curr_device]
-            inferencing_start = datetime.now()
-            output, image_loc_string = graph_ref.GetResult()
-            inferencing_duration += (datetime.now() - inferencing_start)
-
-            #Error check (both will return None or both with return correctly)
-            if image_loc_string == None:
-                print(  "Error: couldn't get inference from graph on NCS:" + \
-                        str(curr_device))
-                sys.exit()
-
-            #Get location of the processed area through the userobj string
-            loc = [int(x) for x in image_loc_string.split(':')]
-
-            #One hot encoding, want probability of class 1
-            #(galaxy). Note ncsdk doesn't support the predictor
-            #layer which softmaxes the last dense layer to give
-            #class probability, so manual
-            #softmax must be done in its place
-            pred = softmax(output)[1]
-
-            #Write information into heatmap. Likelihood is
-            #simply added onto heat map at each pixel
-            prob_ag_map[loc[0]:loc[1],
-                        loc[2]:loc[3],
-                        loc[4]] += pred
-            sample_map[ loc[0]:loc[1],
-                        loc[2]:loc[3],
-                        loc[4]] += 1.0
-
-            #Increment and report inferences completed
-            inferenced += 1
-            print(  "\r{0:.4f}".format(100*inferenced/expected) \
-                    + "% complete", end="")
-
-        #Move to next device
-        curr_device = (curr_device + 1) % num_devices
-
-        #If back at the zeroth device (just finished the last device)
-        #then switch from inferencing to loading (not inferencing) and
-        #vice versa
-        if curr_device == 0:
-            inferencing = not inferencing
+    #Wait for all children to terminate
+    for t in range(len(threads)):
+        threads[t].join()
 
     #Inferencing now complete, calculate metrics for later reporting
-    evaluation_duration =   datetime.now() - evaluation_start - \
-                            timedelta(seconds=timeout)
+    NCS_duration =  datetime.now() - NCS_start - \
+                    timedelta(seconds=timeout)
 
     #Deallocate graphs and close devices
     print("\nDeallocating network graphs and closing device(s)")
@@ -792,37 +885,30 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
         #Close opened device
         device_handles[d].CloseDevice()
 
-        #Calcalate device's utilisation (what percentage of images it inferenced)
-        utilisation[d] /= expected
-        utilisation[d] *= 100   #As a percentage
+    #Print metrics
+    print("Time spent:")
+    print("\t-receiving data: " + str(receiving_duration))
+    print("\t-inferencing:    " + str(NCS_duration))
+    print("Device utilisation:")
+    for d in range(num_devices):
+        print("\t-" + device_name_list[d] + " - " + str(utilisation[d].value))
 
     #Normalise the probability by dividing the aggregate prob by the amount
     #of predictions/samples made at that pixel. Handle divide by zeroes which may
     #occur along edges
-    print("Processing and plotting probabilities")
+    print("Processing and plotting probability map")
     prob_map = np.divide(   prob_ag_map, sample_map,
                             out=np.zeros_like(prob_ag_map),
-                            where=sample_map!=0)
+                            where=sample_map!=0) #Ignore poorly sampled edges
 
-    #Run post processing to enhance galactic probabilites                        
+    #Coordinate system has changed, rotate to fix
+    #prob_map = np.rot90(prob_map)
+
+    #Run post processing to enhance galactic probabilites
     prob_map = post_process_prob_map(prob_map)
 
     #Plot data or visualisation
-    plot_prob_map(prob_map)
-
-    #Print metrics
-    processing_duration =   evaluation_duration - \
-                            load_tensor_duration - \
-                            inferencing_duration
-    print("Time spent:")
-    print("\t-evaluating (total):           " + str(evaluation_duration))
-    print("\t-recieving & formatting input: " + str(processing_duration))
-    print("\t-loading tensors:              " + str(load_tensor_duration))
-    print("\t-inferencing:                  " + str(inferencing_duration))
-
-    print("Precentage evaluated by device:")
-    for d in range(num_devices):
-        print("\t-"+device_name_list[d]+" = {0:.2f}".format(utilisation[d])+"%")
+    plot_prob_map(prob_map, start_x, start_y, start_f)
 
 #Plots the convolutional filter-weights/kernel for a given layer using matplotlib
 def plot_conv_weights(graph_name, scope, start_conv, final_conv, suffix):
