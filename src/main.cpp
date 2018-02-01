@@ -51,7 +51,7 @@ const int INPUT_WIDTH = 32;
 const int INPUT_HEIGHT = 32;
 
 //Number of images to feed per batch (minibatch)
-const int BATCH_SIZE = 1;
+const int BATCH_SIZE = 32;
 
 //Global command line variables, use getopt to get the following arguments:
 char *JPX_FILEPATH    = NULL;
@@ -106,7 +106,7 @@ struct label{
 
   int f; //FREQ or z-axis coordinate of rectangle
 
-  bool isGalaxy;  //Does this label represent a galaxy
+  bool is_galaxy;  //Does this label represent a galaxy
 };
 
 //----------------------------------------------------------------------------//
@@ -187,40 +187,12 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
           l.f = nlst.get_numlist_layer(0);
 
           //If a label is being read from the roid box then it holds a galaxy
-          l.isGalaxy = true;
+          l.is_galaxy = true;
 
           //Only acknowledge if within component range (inclusive)
           if(l.f >= START_COMPONENT_INDEX && l.f <= FINAL_COMPONENT_INDEX){
             //"Your labels will make a fine addition to my ... collection"
             labels.push_back(l);
-
-            //Also push back slightly translated labels (<10px each way for better
-            //generalisation)
-            int translation = 8;
-            int x;
-            int y;
-            for(int i = 0; i < 4; i++){
-              //All different directions of translation
-              if(i == 0){
-                x = -1; y = 0;
-              }else if(i == 1){
-                x = 1;  y = 0;
-              }else if(i == 2){
-                x = 0;  y = -1;
-              }else if(i == 3){
-                x = 0;  y = 1;
-              }
-
-              //Goes through four combinations (-1,0), (1,0), (0,-1), (0,1)
-              label translated_l;
-              translated_l.tlx  = l.tlx + translation*x;
-              translated_l.tly  = l.tly + translation*y;
-              translated_l.brx  = l.brx + translation*x;
-              translated_l.bry  = l.bry + translation*y;
-              translated_l.f    = l.f;
-              translated_l.isGalaxy = l.isGalaxy;
-              labels.push_back(translated_l);
-            }
           }
         }
         //Case closed
@@ -249,8 +221,63 @@ bool labels_intersect(label a, label b){
             a.bry < b.tly);
 }
 
-//Creates a set of false labels
-void generate_false_labels( vector<label> & labels){
+//Augments the labels supplied by translating them a given distance which is
+//randomly chosen between min and max supplied. Warning: the label will be
+//tagged the same as what it is copying (galaxy/not galaxy) so do not translate
+//the galaxy out of bounds. Returns number of generated labels and adds new
+//labels to original array
+int generate_translated_labels(vector<label> & labels,
+                                int min_trans, int max_trans, int copies)
+{
+  //Count the number generated for returning
+  int num_generated = 0;
+
+  //To prevent infinite loops when copying
+  int orig_size = labels.size();
+
+  //Seed RNG
+  srand(time(NULL));
+
+  //Every label will have a given number of translated copies
+  for(int l = 0; l < orig_size; l++){
+    label orig_label = labels[l];
+
+    //Go through labels and add i copies
+    for(int i = 0; i < copies; i++){
+      //Randomly generate bounded x and y translation
+      int x_trans = rand()%max_trans + min_trans;
+      int y_trans = rand()%max_trans + min_trans;
+
+      //Randomly choose direction
+      x_trans = (rand()%2 == 0) ? x_trans*-1 : x_trans;
+      y_trans = (rand()%2 == 0) ? y_trans*-1 : y_trans;
+
+      //Create a new label that is the old label translated
+      label new_label;
+
+      //Translate relative to old
+      new_label.tlx = orig_label.tlx + x_trans;
+      new_label.tly = orig_label.tly + y_trans;
+      new_label.brx = orig_label.brx + x_trans;
+      new_label.bry = orig_label.bry + y_trans;
+      new_label.f   = orig_label.f;
+      new_label.is_galaxy = orig_label.is_galaxy;
+
+      //Add new label to label list
+      labels.push_back(new_label);
+
+      num_generated++;
+    }
+  }
+
+  return num_generated;
+}
+
+//Creates a set of false labels. Returns how many it creates and adds new labels
+//to original array
+int generate_noise_labels(vector<label> & labels){
+  int num_generated = 0;
+
   //Range of components
   int range = FINAL_COMPONENT_INDEX - START_COMPONENT_INDEX + 1; //+1 because inclusive
   //Required number of noise labels to be found
@@ -268,10 +295,9 @@ void generate_false_labels( vector<label> & labels){
 
     //Go over every component and generate the required labels randomly from
     //areas that don't have a galaxy in them
-    int noise_labels_generated = 0;
     for(int i = START_COMPONENT_INDEX; i <= FINAL_COMPONENT_INDEX; i++){
       //If enough galaxies have been found then finish
-      if(noise_labels_generated >= req){
+      if(num_generated >= req){
         break;
       }
 
@@ -300,7 +326,7 @@ void generate_false_labels( vector<label> & labels){
         noise.tly       = rand()%3599;
         noise.brx       = noise.tlx + w;
         noise.bry       = noise.tly + h;
-        noise.isGalaxy  = false;
+        noise.is_galaxy  = false;
         noise.f         = i;
 
         //Does the noise label overlap with any galaxy label? If so then retry
@@ -317,11 +343,13 @@ void generate_false_labels( vector<label> & labels){
           j--;
         }else{
           labels.push_back(noise);
-          noise_labels_generated++;
+          num_generated++;
         }
       }
     }
   }
+
+  return num_generated;
 }
 
 //Prints various codestream statistics
@@ -461,9 +489,9 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
   //Construct a region from the given data
   kdu_dims region;
   region.access_pos()->set_x(x);
-  region.access_size()->set_x(w);
+  region.access_size()->set_x(w - 1);
   region.access_pos()->set_y(y);
-  region.access_size()->set_y(h);
+  region.access_size()->set_y(h - 1);
 
   //Decompress over labeled frames at the correct
   //spacial coordinates using kakadu decompressor
@@ -793,7 +821,7 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
       }
 
       //And the label (1 -> galaxy, 0 -> noise)
-      kdu_uint32 label_int = (labels[l].isGalaxy ? 1 : 0);
+      kdu_uint32 label_int = (labels[l].is_galaxy ? 1 : 0);
       int label_transmitted = send(server, &label_int, sizeof(label_int), 0);
       if(label_transmitted != 1*4){
         cout << "Error: label " << l << " was not sent completely over socket, "
@@ -834,8 +862,8 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
   //possible region is fed to the neural network graph to test if it holds a
   //galaxy. The result is crunched to find the area that most likely holds
   //a galaxy based on the results for nearby regions
-  int stride_x = 4;
-  int stride_y = 4;
+  int stride_x = 16;
+  int stride_y = 16;
 
   //For tracking progress
   int steps_x = floor((LIMIT_RECT_W - INPUT_WIDTH)/stride_x) + 1;
@@ -1202,11 +1230,11 @@ int main(int argc, char **argv){
   }
 
   //Error check arguments
-  int typeFlagCount = 0;
-  typeFlagCount += (IS_TRAIN) ? 1 : 0;
-  typeFlagCount += (IS_VALIDATE) ? 1 : 0;
-  typeFlagCount += (IS_EVALUATE) ? 1 : 0;
-  if(typeFlagCount != 1){
+  int type_flag_count = 0;
+  type_flag_count += (IS_TRAIN) ? 1 : 0;
+  type_flag_count += (IS_VALIDATE) ? 1 : 0;
+  type_flag_count += (IS_EVALUATE) ? 1 : 0;
+  if(type_flag_count != 1){
     cout << "Error: training, validation and evaluation sessions are mutally exclusive; please pick one option\n";
     return -1;
   }
@@ -1265,11 +1293,9 @@ int main(int argc, char **argv){
   }
 
   //Print statistics
-  //print_statistics(codestream);
+  print_statistics(codestream);
 
   //TODO check resolution level is correct
-
-  //Begin timing
 
   //Split on training/validation/evaluating
   if(IS_TRAIN || IS_VALIDATE){
@@ -1280,15 +1306,18 @@ int main(int argc, char **argv){
     cout << num_true_labels << " galaxy labels found in inclusive component range ["
       << START_COMPONENT_INDEX << ", " << FINAL_COMPONENT_INDEX << "]\n";
 
-    //Now add some false labels. False labels won't be where a galaxy is spatially,
-    //so get 100x100's that aren't in the galaxy components. Get as many false labels
-    //as true labels
-    generate_false_labels(labels);
-    cout << labels.size() - num_true_labels << " noise labels generated\n";
+    //Get translation translation labels,
+    //args=orig_arr, min_trans, max_trans, copies
+    cout << generate_translated_labels(labels, 0, 12, 8)
+      << " translated labels generated\n";
 
-    //Note jpx_src required for metadata reads and codestream required for
-    //image decompression. The final argument specifies if the model should
-    //be update (which it should during training)
+    //Get as many false labels as true labels
+    cout << generate_noise_labels(labels) << " noise labels generated\n";
+
+    //Announce total number of labels
+    cout << labels.size() << " labels in total\n";
+
+    //Begin training
     train(labels, codestream, env);
   }
   if(IS_EVALUATE){

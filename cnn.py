@@ -55,12 +55,12 @@ INPUT_HEIGHT = 32
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [7, 7, 7, 7]
+FILTER_SIZES    =   [5, 5, 5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 16, 24, 32]
+NUM_FILTERS     =   [16, 24, 32]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
-FC_SIZES        =   [2048, 256, 32]
+FC_SIZES        =   [256, 48]
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -123,8 +123,7 @@ def make_compatible(image_data,
                     save_image=False,
                     width=INPUT_WIDTH,
                     height=INPUT_HEIGHT,
-                    duplicate_channels=True,
-                    scale_to_int8=True):
+                    duplicate_channels=True):
     #Reshape to placeholder dimensions
     output = np.reshape(image_data, (width, height))
 
@@ -137,10 +136,6 @@ def make_compatible(image_data,
 
     #Now cast
     output = np.float16(output)
-
-    #And scale if required
-    if scale_to_int8:
-        output = output/255.0
 
     #Add two more channels to get RBG if required
     if duplicate_channels:
@@ -163,8 +158,9 @@ def byte_string_to_int_array(bytes):
 def save_data_as_comparison_image(image_data, x, w, y, h, f):
     #Make compatible
     image_data = make_compatible(   image_data, width=w, height=h,
-                                    duplicate_channels=False,
-                                    scale_to_int8=False)
+                                    duplicate_channels=False)
+
+    print("ipy")
 
     #Create name
     name = "original-" + str(x) + "-" + str(y)  + "-" + str(w) + "-" + \
@@ -183,16 +179,15 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
     timeout = 0.5       #Timeout before cutting recv'ing loop in seconds
 
-    #Make sure graph structure is reset before opening session
-    tf.reset_default_graph()
-
     #Begin a tensorflow session
     sess = tf.Session()
 
-    #Load the graph to be trained & keep the saver for later updating
+    #Load the graph to be trained & keep the saver for later updating,
+    #by creating an identical grah and restoring weights
     print(  "Loading graph '" + graph_name + "' for " + \
             ("training" if optimise_and_save == 1 else "validation"))
-    saver = restore_model(graph_name, sess)
+    saver = new_training_graph(graph_name)
+    restore_model(graph_name, sess, saver)
 
     #Prepare to track information
     t_pos = 0   #Correct classified a galaxy
@@ -258,7 +253,8 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             #Turn recieved info into a feeder dictionary
             feed_dict = {
                             'images:0': image_batch,
-                            'labels:0': label_batch
+                            'labels:0': label_batch,
+                            'is_training:0': optimise_and_save
                         }
 
             #If training then train
@@ -293,11 +289,13 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             batch_num += 1
 
             #Print running results
-            print("-units     = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.4f}".format(100*units_num/total_units) + "% of units fed)")
+            print("-units           = " + str(units_num) + "/" + str(total_units) + " (" + "{0:.4f}".format(100*units_num/total_units) + "% of units fed)")
+            #Prints the global step
+            print("-global_step     = " + str(sess.run('global_step:0', feed_dict=feed_dict)))
             #Prints current learning rate
-            print("-alpha     = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
+            print("-alpha           = " + str(sess.run('alpha:0', feed_dict=feed_dict)))
             #Prints current loss
-            print("-loss      = " + str(sess.run('loss:0', feed_dict=feed_dict)))
+            print("-loss            = " + str(sess.run('loss:0', feed_dict=feed_dict)))
 
             #Print tabulated gal data
             tableGal = Texttable()
@@ -311,15 +309,15 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
                 batch_t_pos,
                 batch_f_pos,
                 batch_t_pos + batch_f_pos,
-                "{0:.4f}".format(100*batch_t_pos/(batch_t_pos + batch_f_neg)) \
-                    if (batch_t_pos + batch_f_neg != 0) else "-"],
+                "{0:.4f}".format(100*batch_t_pos/(batch_t_pos + batch_f_pos)) \
+                    if (batch_t_pos + batch_f_pos != 0) else "-"],
 
                 ['SESSION',
                 t_pos,
                 f_pos,
                 t_pos + f_pos,
-                "{0:.4f}".format(100*t_pos/(t_pos + f_neg)) \
-                    if (t_pos + f_neg != 0) else "-"]
+                "{0:.4f}".format(100*t_pos/(t_pos + f_pos)) \
+                    if (t_pos + f_pos != 0) else "-"]
             ])
             print(tableGal.draw())
 
@@ -335,15 +333,15 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
                 batch_t_neg,
                 batch_f_neg,
                 batch_t_neg + batch_f_neg,
-                "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_pos)) \
-                    if (batch_t_neg + batch_f_pos != 0) else "-"],
+                "{0:.4f}".format(100*batch_t_neg/(batch_t_neg + batch_f_neg)) \
+                    if (batch_t_neg + batch_f_neg != 0) else "-"],
 
                 ['SESSION',
                 t_neg,
                 f_neg,
                 t_neg + f_neg,
-                "{0:.4f}".format(100*t_neg/(t_neg + f_pos)) \
-                    if (t_neg + f_pos != 0) else "-"]
+                "{0:.4f}".format(100*t_neg/(t_neg + f_neg)) \
+                    if (t_neg + f_neg != 0) else "-"]
             ])
             print(tableNse.draw())
 
@@ -379,7 +377,7 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
     if optimise_and_save == 1:
         #Save the slightly more trained graph if in training mode
         print("Saving training modifications made to graph in this run")
-        update_model(graph_name, sess, saver)
+        save_model(graph_name, sess, saver)
 
     #Close tensorflow session
     sess.close()
@@ -408,11 +406,19 @@ def post_process_prob_map(prob_map):
 
     #Apply threshold for clarity
     threshold = prob_map < 0.4
-    prob_map[threshold] = 0
+    #prob_map[threshold] = 0
+
+    #Go through entire prob map and zero out high prediction pixels
+    #that don't have a sufficient number of nearby high prediction pixels
 
     #Increase prob for high prob areas that bleed through freq frames
+    if depth >= 3:
+        #Obviously cannot do on frequencu frames on edge (no adjacent)
+        for f in range(1, depth-1):
+            pass
 
 
+    #Return the altered map
     return prob_map
 
 #Helper to plot an evaluation probability map
@@ -467,29 +473,13 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
     timeout = 0.5       #How many seconds to wait before finishing
 
-    #Make sure graph structure is reset before opening session
-    tf.reset_default_graph()
-
-    #Create a graph for evaluation
-    new_graph(id=graph_name,        #Id/name
-              filter_sizes=FILTER_SIZES,  #Convolutional layer filter sizes in pixels
-              num_filters=NUM_FILTERS, #Number of filters in each Convolutional layer
-              fc_sizes=FC_SIZES,    #Number of neurons in fully connected layer
-              for_training=False)   #Gets rid of placeholders and training structures
-                                    #that aren't needed for NCS
-
-    #Use this to load in weights from trained graph
-    saver = tf.train.Saver(tf.global_variables())
-
     #A session is required
     sess = tf.Session()
 
-    #Initialise no placeholder architecture
-    sess.run(tf.global_variables_initializer())
-    sess.run(tf.local_variables_initializer())
-
-    #Load in weights from trained graph
-    saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
+    #Initialise no placeholder architecture and restore weights into empty
+    #graph
+    saver = new_evaluation_graph(graph_name)
+    restore_model(graph_name, sess, saver)
 
     #Print a picture to put on the tensorboard fridge
     writer = tf.summary.FileWriter('logs', sess.graph)
@@ -557,13 +547,14 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
             image_f   = image_loc[2][0]
 
             #Create a unitary feeder dictionary
-            feed_dict_eval = {  'images:0': [image_input]  }
+            feed_dict_eval = {
+                                'images:0': [image_input]
+                            }
 
             #Get the prediction that it is a galaxy
             #(the 1th element of the one hot encoding)
             output = sess.run(OUTPUT_CPU_NAME + ':0', feed_dict=feed_dict_eval)[0]
             pred = softmax(output)[1]
-            #print(pred)
             count += 1
             print("\r{0:.4f}".format(100*count/expected) + "% complete", end="")
 
@@ -593,36 +584,22 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
     print("Plotting 2D component prediction map(s)")
     plot_prob_map(prob_map, start_x, start_y, start_f)
 
-    #Close tensorflow session
+    #Close tensorflow session, no reason to save
     sess.close()
 
 #Must occur pre NCS usage, creates a version of the .meta file without any
 #training placeholders (otherwise will fail)
 def compile_for_ncs(graph_name):
-    #Create a graph, if graph is any larger then network will
-    #not be Movidius NCS compatible (reason unknown)
-    new_graph(id=graph_name,      #Id/name
-              filter_sizes=FILTER_SIZES,  #Convolutional layer filter sizes in pixels
-              num_filters=NUM_FILTERS, #Number of filters in each Convolutional layer
-              fc_sizes=FC_SIZES,    #Number of neurons in fully connected layer
-              for_training=False)   #Gets rid of placeholders and training structures
-                                    #that aren't needed for NCS
-
-    #Prepare to save all this stuff
-    saver = tf.train.Saver(tf.global_variables())
-
     #A session is required
     sess = tf.Session()
 
-    #Initialise no placeholder architecture
-    sess.run(tf.global_variables_initializer())
-    sess.run(tf.local_variables_initializer())
-
-    #Load in weights from trained graph
-    saver.restore(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name)
+    #Initialise no placeholder architecture and restore weights into empty
+    #graph
+    saver = new_evaluation_graph(graph_name)
+    restore_model(graph_name, sess, saver)
 
     #Save without placeholders
-    saver.save(sess, GRAPHS_FOLDER+"/"+graph_name+"/"+graph_name+"-for-ncs")
+    saver.save(sess, GRAPHS_FOLDER + "/" + graph_name + "/" + "ncs")
 
     #Finish session
     sess.close()
@@ -631,11 +608,11 @@ def compile_for_ncs(graph_name):
     #Example: 'mvNCCompile graphs/test-graph/test-graph.meta -in=images -on=dense_final/BiasAdd -o=./graphs/test-graph/test-graph-for-ncs.graph'
     subprocess.call([
         'mvNCCompile',
-        (GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.meta"),
+        (GRAPHS_FOLDER + "/" + graph_name + "/" + "ncs.meta"),
         "-s=" + str(SHAVES),
         "-in=" + INPUT_NAME,
         "-on=" + OUTPUT_NCS_NAME,
-        "-o=" + GRAPHS_FOLDER+"/"+graph_name+"/"+graph_name+"-for-ncs.graph",
+        "-o=" + GRAPHS_FOLDER + "/" + graph_name + "/" + "ncs.graph",
         "-is", str(INPUT_WIDTH), str(INPUT_HEIGHT)
     ]
     #,stdout=open(os.devnull, 'wb')  #Suppress output
@@ -736,7 +713,7 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
 
     #Load the compiled graph
     graph_file = None;
-    filepath = GRAPHS_FOLDER + "/" + graph_name + "/" + graph_name + "-for-ncs.graph"
+    filepath = GRAPHS_FOLDER + "/" + graph_name + "/" + "ncs.graph"
     with open(filepath, mode='rb') as f:
         #Read it in
         graph_file = f.read()
@@ -912,14 +889,13 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
 
 #Plots the convolutional filter-weights/kernel for a given layer using matplotlib
 def plot_conv_weights(graph_name, scope, start_conv, final_conv, suffix):
-    #Make sure graph structure is reset before opening session
-    tf.reset_default_graph()
-
-    #Begin a tensorflow session
+    #A session is required
     sess = tf.Session()
 
-    #Load the graph to be plotted
-    saver = restore_model(graph_name, sess)
+    #Initialise no placeholder architecture and restore weights into empty
+    #graph
+    saver = new_evaluation_graph(graph_name)
+    restore_model(graph_name, sess, saver)
 
     #Get the weights
     for j in range(start_conv, final_conv + 1):
@@ -968,7 +944,7 @@ def new_graph(id,             #Unique identifier for saving the graph
               filter_sizes,   #Filter dims for each convolutional layer (kernals)
               num_filters,    #Number of filters for each convolutional layer
               fc_sizes,       #Number of neurons in fully connected layers
-              for_training):  #The Movidius NCS' are picky and won't resolve unknown
+              training_graph):  #The Movidius NCS' are picky and won't resolve unknown
                               #placeholders. For loading onto the NCS these, and other
                               #training structures (optimizer, dropout, batch normalisation)
                               #all must go - only keep the inference structures
@@ -987,10 +963,13 @@ def new_graph(id,             #Unique identifier for saving the graph
     images = tf.placeholder(tf.float32, shape=[None, INPUT_WIDTH, INPUT_HEIGHT, channels], name='images')
     print("\t\t" + '{:20s}'.format("-Image placeholder ") + " : " + str(images))
 
-    if for_training:
+    if training_graph:
         #and supervisory signals which are boolean (is or is not a galaxy)
         labels = tf.placeholder(tf.float32, shape=[None, 2], name='labels')
         print("\t\t" + '{:20s}'.format("-Label placeholder ") + " : " + str(labels))
+
+        #Controls batch normalisation behaviour when training/validating
+        is_training = tf.placeholder(tf.bool, name='is_training')
 
     #This layer will be transformed along the way
     layer = images
@@ -1013,14 +992,16 @@ def new_graph(id,             #Unique identifier for saving the graph
             strides=1,
             padding='SAME',
             use_bias=True,
-            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.0005),
             activation=tf.nn.relu,
             trainable=True,
             name="conv_" + str(i)
         )
+
         print("\t\t" + '{:20s}'.format("-Convolutional ") + str(i) + ": " + str(layer))
-        '''
+
         #Apply pooling
+        '''
         layer = tf.layers.average_pooling2d(
             inputs=layer,
             pool_size=2,
@@ -1030,6 +1011,29 @@ def new_graph(id,             #Unique identifier for saving the graph
         )
         print("\t\t" + '{:20s}'.format("-Average pooling ")  + str(i) + ": " + str(layer))
         '''
+
+        '''
+        #Batch norm must be implemented differently for NCS (always not training)
+        if training_graph:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=is_training,
+                momentum=0.9,
+                fused=True,
+                name="conv_bn_" + str(i)
+            )
+        else:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=False,
+                momentum=0.9,
+                fused=True,
+                name="conv_bn_" + str(i)
+            )
+
+        print("\t\t" + '{:20s}'.format("-Batch normal ") + str(i) + ": " + str(layer))
+        '''
+
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
     num_features = (layer.get_shape())[1:4].num_elements()
@@ -1046,11 +1050,37 @@ def new_graph(id,             #Unique identifier for saving the graph
             units=fc_sizes[i],
             activation=tf.nn.relu,
             use_bias=True,
-            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.0005),
             trainable=True,
             name="dense_" + str(i)
         )
         print("\t\t" + '{:20s}'.format("-Dense ") + str(i) + ": " + str(layer))
+
+        #Batch norm must be implemented differently for NCS (always not training)
+        '''
+        if training_graph:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=is_training,
+                momentum=0.9,
+                fused=True,
+                name="dense_bn_" + str(i)
+            )
+        else:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=False,
+                momentum=0.9,
+                fused=True,
+                name="dense_bn_" + str(i)
+            )
+
+        print("\t\t" + '{:20s}'.format("-Batch normal  ") + str(i) + ": " + str(layer))
+        '''
+
+    #Dropout 50% for max regularization (equal prob dist for subnets)
+    #layer = tf.nn.dropout(layer, 0.5, name="dropout")
+    #print("\t\t" + '{:20s}'.format("-Dropout ") + " : " + str(layer))
 
     #The final layer is a neuron for each class
     layer = tf.layers.dense(
@@ -1058,14 +1088,17 @@ def new_graph(id,             #Unique identifier for saving the graph
         units=2,
         activation=None,    #Note no ReLU
         use_bias=True,
-        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.05),
+        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.0005),
         trainable=True,
         name="dense_final"
     )
     print("\t\t" + '{:20s}'.format("-Dense (final)") + " : " + str(layer))
 
+    #Create special operations for batch normalisation (moving mean & variance)
+    update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+
     #The following structures are only required when training
-    if for_training:
+    if training_graph:
         #Final fully connected layer suggests prediction (these structures are added to
         #collections for ease of access later on). This gets the most likely prediction.
         #Note that the tf.nn.softmax layer is considered to operate only on large dtypes
@@ -1092,99 +1125,78 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         #Decaying learning rate for bolder retuning
         #at the beginning of the training run and more finessed tuning at end
-        global_step = tf.Variable(0, trainable=False)   #Incremented per batch
-        init_alpha = 0.0001
+        global_step = tf.Variable(0, trainable=False, name="global_step")   #Incremented per batch
+        init_alpha = 0.00001
         decay_base = 1      #alpha = alpha*decay_base^(global_step/decay_steps)
         decay_steps = 64
         alpha = tf.train.exponential_decay( init_alpha,
                                             global_step, decay_steps, decay_base,
                                             name='alpha')
         print("\t\t" + '{:20s}'.format("-Learning rate") + " : " + str(alpha), end="")
-        print(" (" + str(init_alpha) + "*" + str(decay_base) + "^(batch_no/" + str(decay_steps) + ")")
+        print(" [" + str(init_alpha) + "*" + str(decay_base) + "^(batch_no/" + str(decay_steps) + ")]")
 
         #Optimisation function to Optimise cross entropy will be Adam optimizer
         #(advanced gradient descent)
-        optimiser = (
-            tf.train.AdamOptimizer(learning_rate=init_alpha)
-            .minimize(loss, global_step=global_step)    #Decay learning rate
-                                                        #by incrementing global step
-                                                        #once per batch
-        )
+        with tf.control_dependencies(update_ops):
+            optimiser = (
+                tf.train.AdamOptimizer(learning_rate=init_alpha)
+                .minimize(loss, global_step=global_step)    #Decay learning rate
+                                                            #by incrementing global step
+                                                            #once per batch
+            )
         print("\t\t" + '{:20s}'.format("-Optimiser") + " : " + str(optimiser.name))
+
+    #Create a saver for this graph
+    return tf.train.Saver(tf.global_variables())
 
 #Wraps the above to make a basic convolutional neural network for binary
 #image classification
-def new_basic_training_graph(id):
+def new_training_graph(id):
     #Create a graph, if graph is any larger then network will
     #not be Movidius NCS compatible (reason unknown)
-    new_graph(id,      #Id/name
+    saver = new_graph(id,      #Id/name
               filter_sizes=FILTER_SIZES,    #Convolutional layer filter sizes in pixels
               num_filters=NUM_FILTERS,      #Number of filters in each Convolutional layer
               fc_sizes=FC_SIZES,            #Number of neurons in fully connected layer
-              for_training=True)
+              training_graph=True)
 
-    #Save it in a tensorflow session
-    sess = tf.Session()
-    save_model_as_meta(id, sess)
-    sess.close()
-
-#Restores the model (graph and variables) from a supplied filepath
-def restore_model(id, sess):
-    #Location is in graphs/id
-    filepath = GRAPHS_FOLDER + "/" + id + "/" + id
-
-    #Load from file
-    saver = tf.train.import_meta_graph(filepath + ".meta")  #Graph structure
-    saver.restore(sess, filepath)                       #Variables
-
-    #Return the saver
+    #Return the saver for saving
     return saver
 
-#Updates a model (used in training)
-def update_model(id, sess, saver):
+#Wraps the above to make a convolutional neural network for binary image
+#classification WITHOUT training graph structures
+def new_evaluation_graph(id):
+    #Create a graph, if graph is any larger then network will
+    #not be Movidius NCS compatible (reason unknown)
+    saver = new_graph(id,      #Id/name
+              filter_sizes=FILTER_SIZES,    #Convolutional layer filter sizes in pixels
+              num_filters=NUM_FILTERS,      #Number of filters in each Convolutional layer
+              fc_sizes=FC_SIZES,            #Number of neurons in fully connected layer
+              training_graph=False)
+
+    #Return the saver for saving
+    return saver
+
+#Deletes a graph and its subfolders
+def delete_graph(id):
     #Remove old if it exists (don't complain if it doesn't)
-    shutil.rmtree(GRAPHS_FOLDER + "/" + id)
+    shutil.rmtree(GRAPHS_FOLDER + "/" + id, ignore_errors=True)
 
+#Reloads the variables from another graph into the current session's graph
+def restore_model(id, sess, saver):
     #File is named id in id folder
-    filepath = GRAPHS_FOLDER + "/" + id + "/" + id
+    filepath = GRAPHS_FOLDER + "/" + id + "/" + "ckpt"
 
-    #Saving operation
-    saver.save(sess, filepath)                      #Variables
-    saver.export_meta_graph(filepath + ".meta")     #Graph structure
+    #Restoring process. '.meta' file extension is implied
+    saver.restore(sess, filepath)
 
 #Saves the current model (graph and variables) to a supplied filepath
-def save_model_as_meta(id, sess):
-    #Remove old if it exists (don't complain if it doesn't)
-    shutil.rmtree(GRAPHS_FOLDER + "/" + id, True)
+def save_model(id, sess, saver):
+    #Remove old version
+    delete_graph(id)
 
     #File is named id in id folder
-    filepath = GRAPHS_FOLDER + "/" + id + "/" + id
-
-    #Initialise if required
-    sess.run(tf.global_variables_initializer())
-    sess.run(tf.local_variables_initializer())
+    filepath = GRAPHS_FOLDER + "/" + id + "/" + "ckpt"
 
     #Saving operation
-    saver = tf.train.Saver(max_to_keep=1)           #Keep only one copy
-    saver.save(sess, filepath)                      #Variables
-    saver.export_meta_graph(filepath + ".meta")     #Graph structure
-
-#Export's the current model (graph and variables) to a pb MVNCcompile-able
-#serialized graph file
-def save_model_as_pb(id, sess):
-    #Announce
-    print("Exporting model to: '" + GRAPHS_FOLDER + "/" + id + "/" + id + ".pb' ")
-
-    #Get graph
-    graph = sess.graph_def
-
-    #Notify of placeholder names to use when compiling for evaluation
-    #print("& including the following operations:")
-    #ops = sess.graph.get_operations()
-    #print(ops)
-
-    #print(sess.graph.get_tensor_by_name("images:0"))
-
-    #Export to specified file
-    with open(GRAPHS_FOLDER + "/" + id + "/" + id + ".pb", 'wb') as f:
-        f.write(graph.SerializeToString())
+    saver.save(sess, filepath)
