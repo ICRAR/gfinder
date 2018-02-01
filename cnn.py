@@ -1001,7 +1001,6 @@ def new_graph(id,             #Unique identifier for saving the graph
         print("\t\t" + '{:20s}'.format("-Convolutional ") + str(i) + ": " + str(layer))
 
         #Apply pooling
-        '''
         layer = tf.layers.average_pooling2d(
             inputs=layer,
             pool_size=2,
@@ -1010,29 +1009,6 @@ def new_graph(id,             #Unique identifier for saving the graph
             name="pooling_" + str(i)
         )
         print("\t\t" + '{:20s}'.format("-Average pooling ")  + str(i) + ": " + str(layer))
-        '''
-
-        '''
-        #Batch norm must be implemented differently for NCS (always not training)
-        if training_graph:
-            layer = tf.layers.batch_normalization(
-                inputs=layer,
-                training=is_training,
-                momentum=0.9,
-                fused=True,
-                name="conv_bn_" + str(i)
-            )
-        else:
-            layer = tf.layers.batch_normalization(
-                inputs=layer,
-                training=False,
-                momentum=0.9,
-                fused=True,
-                name="conv_bn_" + str(i)
-            )
-
-        print("\t\t" + '{:20s}'.format("-Batch normal ") + str(i) + ": " + str(layer))
-        '''
 
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
@@ -1056,31 +1032,10 @@ def new_graph(id,             #Unique identifier for saving the graph
         )
         print("\t\t" + '{:20s}'.format("-Dense ") + str(i) + ": " + str(layer))
 
-        #Batch norm must be implemented differently for NCS (always not training)
-        '''
-        if training_graph:
-            layer = tf.layers.batch_normalization(
-                inputs=layer,
-                training=is_training,
-                momentum=0.9,
-                fused=True,
-                name="dense_bn_" + str(i)
-            )
-        else:
-            layer = tf.layers.batch_normalization(
-                inputs=layer,
-                training=False,
-                momentum=0.9,
-                fused=True,
-                name="dense_bn_" + str(i)
-            )
-
-        print("\t\t" + '{:20s}'.format("-Batch normal  ") + str(i) + ": " + str(layer))
-        '''
-
-    #Dropout 50% for max regularization (equal prob dist for subnets)
-    #layer = tf.nn.dropout(layer, 0.5, name="dropout")
-    #print("\t\t" + '{:20s}'.format("-Dropout ") + " : " + str(layer))
+    if training_graph:
+        #Dropout 50% for max regularization (equal prob dist for subnets)
+        layer = tf.nn.dropout(layer, 0.5, name="dropout")
+        print("\t\t" + '{:20s}'.format("-Dropout ") + " : " + str(layer))
 
     #The final layer is a neuron for each class
     layer = tf.layers.dense(
