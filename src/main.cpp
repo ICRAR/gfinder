@@ -489,9 +489,9 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
   //Construct a region from the given data
   kdu_dims region;
   region.access_pos()->set_x(x);
-  region.access_size()->set_x(w - 1);
+  region.access_size()->set_x(w);
   region.access_pos()->set_y(y);
-  region.access_size()->set_y(h - 1);
+  region.access_size()->set_y(h);
 
   //Decompress over labeled frames at the correct
   //spacial coordinates using kakadu decompressor
@@ -549,9 +549,10 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
         return false;
   }
 
-  //Create a buffer to send the data across into
+  //Create a buffer to send the data across into. Do it on the heap here because
+  //can be large (3600x3600)
   int bufsize = w*h;
-  kdu_uint32 buffer[bufsize];
+  kdu_uint32* buffer = new kdu_uint32[bufsize];
 
   //Loop decompression to ensure that amount of DWT discard levels doesn't
   //exceed tile with minimum DWT levels
@@ -628,6 +629,9 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
   //training data on
   PyObject_CallObject(py_func, params);
   PyErr_Print();
+
+  //Delete the buffer as it was allocated on the heap
+  delete[] buffer;
 
   //Return success
   return true;
@@ -1056,7 +1060,11 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
 
           //Send the coordinates that this image are corresponds to in the evalulation
           //area in form x,y,f
-          kdu_uint32 loc[3] = {x - LIMIT_RECT_X, y - LIMIT_RECT_Y, c - START_COMPONENT_INDEX};
+          kdu_uint32 loc[3] = {
+            x - LIMIT_RECT_X,
+            y - LIMIT_RECT_Y,
+            c - START_COMPONENT_INDEX
+          };
           int loc_transmitted = send(server, &loc, sizeof(loc), 0);
           if(loc_transmitted != 3*4){
             cout << "Error: position (" << x << ", "
@@ -1293,8 +1301,8 @@ int main(int argc, char **argv){
   }
 
   //Print statistics
-  print_statistics(codestream);
-
+  //print_statistics(codestream);
+  
   //TODO check resolution level is correct
 
   //Split on training/validation/evaluating

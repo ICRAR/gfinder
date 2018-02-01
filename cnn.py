@@ -160,8 +160,6 @@ def save_data_as_comparison_image(image_data, x, w, y, h, f):
     image_data = make_compatible(   image_data, width=w, height=h,
                                     duplicate_channels=False)
 
-    print("ipy")
-
     #Create name
     name = "original-" + str(x) + "-" + str(y)  + "-" + str(w) + "-" + \
             str(h) + "-" + str(f)
@@ -411,12 +409,19 @@ def post_process_prob_map(prob_map):
     #Go through entire prob map and zero out high prediction pixels
     #that don't have a sufficient number of nearby high prediction pixels
 
+    #Cluster (with min radius) pixel groups
+
+    #Write bounding boxes for pixel groups
+
     #Increase prob for high prob areas that bleed through freq frames
     if depth >= 3:
         #Obviously cannot do on frequencu frames on edge (no adjacent)
         for f in range(1, depth-1):
             pass
 
+    #Combat coordinate system change by flipping and rotating
+    prob_map = np.rot90(prob_map, axes=[0,1])
+    prob_map = np.flip(prob_map, axis=0)    #Constant time (uses views)
 
     #Return the altered map
     return prob_map
@@ -458,7 +463,9 @@ def plot_prob_map(prob_map, start_x, start_y, start_f):
         #Explicity close figure for memory usage
         plt.close(fig)
 
-#Recieves a unit and evaluates it using the graph
+#Recieves a unit and evaluates it using the graph. This function is used for
+#development (comparisons) and not designed for use in production. Expect
+#unreliability
 def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
                                     port,              #Port to stream from
                                     region_width,      #Width of region to evaluate
@@ -863,7 +870,7 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
         device_handles[d].CloseDevice()
 
     #Print metrics
-    print("Time spent:")
+    print("Time spent (in parallel):")
     print("\t-receiving data: " + str(receiving_duration))
     print("\t-inferencing:    " + str(NCS_duration))
     print("Device utilisation:")
@@ -877,9 +884,6 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
     prob_map = np.divide(   prob_ag_map, sample_map,
                             out=np.zeros_like(prob_ag_map),
                             where=sample_map!=0) #Ignore poorly sampled edges
-
-    #Coordinate system has changed, rotate to fix
-    #prob_map = np.rot90(prob_map)
 
     #Run post processing to enhance galactic probabilites
     prob_map = post_process_prob_map(prob_map)
@@ -1000,15 +1004,27 @@ def new_graph(id,             #Unique identifier for saving the graph
 
         print("\t\t" + '{:20s}'.format("-Convolutional ") + str(i) + ": " + str(layer))
 
-        #Apply pooling
-        layer = tf.layers.average_pooling2d(
-            inputs=layer,
-            pool_size=2,
-            strides=1,
-            padding='SAME',
-            name="pooling_" + str(i)
-        )
-        print("\t\t" + '{:20s}'.format("-Average pooling ")  + str(i) + ": " + str(layer))
+        '''
+        #Batch norm must be implemented differently for NCS (always not training)
+        if training_graph:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=is_training,
+                momentum=0.9,
+                fused=True,
+                name="conv_bn_" + str(i)
+            )
+        else:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=False,
+                momentum=0.9,
+                fused=True,
+                name="conv_bn_" + str(i)
+            )
+
+        print("\t\t" + '{:20s}'.format("-Batch normal ") + str(i) + ": " + str(layer))
+        '''
 
     #Fully connected layers only take 1D tensors so above output must be
     #flattened from 4D to 1D
@@ -1032,8 +1048,28 @@ def new_graph(id,             #Unique identifier for saving the graph
         )
         print("\t\t" + '{:20s}'.format("-Dense ") + str(i) + ": " + str(layer))
 
+        #Batch norm must be implemented differently for NCS (always not training)
+        if training_graph:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=is_training,
+                momentum=0.9,
+                fused=True,
+                name="dense_bn_" + str(i)
+            )
+        else:
+            layer = tf.layers.batch_normalization(
+                inputs=layer,
+                training=False,
+                momentum=0.9,
+                fused=True,
+                name="dense_bn_" + str(i)
+            )
+
+        print("\t\t" + '{:20s}'.format("-Batch normal  ") + str(i) + ": " + str(layer))
+
+    #Dropout 50% for max regularization (equal prob dist for subnets)
     if training_graph:
-        #Dropout 50% for max regularization (equal prob dist for subnets)
         layer = tf.nn.dropout(layer, 0.5, name="dropout")
         print("\t\t" + '{:20s}'.format("-Dropout ") + " : " + str(layer))
 
@@ -1081,7 +1117,7 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Decaying learning rate for bolder retuning
         #at the beginning of the training run and more finessed tuning at end
         global_step = tf.Variable(0, trainable=False, name="global_step")   #Incremented per batch
-        init_alpha = 0.00001
+        init_alpha = 0.001
         decay_base = 1      #alpha = alpha*decay_base^(global_step/decay_steps)
         decay_steps = 64
         alpha = tf.train.exponential_decay( init_alpha,
