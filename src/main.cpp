@@ -58,7 +58,8 @@ char *JPX_FILEPATH    = NULL;
 bool IS_TRAIN         = false;
 bool IS_VALIDATE      = false;
 bool IS_EVALUATE      = false;
-bool IS_OUTPUT_IMAGES = false;
+bool IS_CHECK         = false;
+char *RESULTS_FILEPATH = NULL;
 char *GRAPH_NAME      = NULL;
 int START_COMPONENT_INDEX = 0;
 int FINAL_COMPONENT_INDEX = 0;
@@ -116,7 +117,7 @@ struct label{
 //Loads label data from the ROI container in a jpx file. Note the jpx source
 //is taken as a refernce - this prevents a segmentation fault later when using
 //the jpx source with kakadu tools
-void load_labels_from_roid_container( jpx_source & jpx_src,
+int load_labels_from_roid_container( jpx_source & jpx_src,
                                       vector<label> & labels)
 {
   //Get a reference to the meta manager
@@ -206,6 +207,9 @@ void load_labels_from_roid_container( jpx_source & jpx_src,
       }
     }
   }while(child.exists());
+
+  //Return the number of labels found
+  return labels.size();
 }
 
 //A helper that checks if two labels (typically an existing galaxy and a generated
@@ -350,6 +354,21 @@ int generate_noise_labels(vector<label> & labels){
   }
 
   return num_generated;
+}
+
+//Loads galaxy locations as labels from a supplied filepath and pushes them
+//to supplied-by-reference vector 'results'
+bool load_results_from_file(char * filepath, vector<label> & results){
+
+
+  //Return success
+  return true;
+}
+
+//Checks if results is equal to labels within a given tolerance and reports
+//results
+void check_evaluation_results(vector<label> labels, vector<label> results){
+
 }
 
 //Prints various codestream statistics
@@ -1016,7 +1035,8 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
                 break;
           }
 
-          //Create a buffer to send the data across into
+          //Create a buffer to send the data across into. Do this on the stack
+          //because data unlikely to be greater than 32x32
           int bufsize = INPUT_WIDTH*INPUT_HEIGHT;
           kdu_uint32 buffer[bufsize];
 
@@ -1102,7 +1122,7 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
     while(wait(&status) != pid);
 
     //Compare prob map to original for each component AFTER inferencing
-    //as completed
+    //is completed
     for(int f = START_COMPONENT_INDEX; f <= FINAL_COMPONENT_INDEX; f++){
       save_data_as_image( codestream, env,
                           LIMIT_RECT_X, LIMIT_RECT_Y,
@@ -1119,7 +1139,22 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
 
 //Called if 'h' or 'u' was called at the command line
 void print_usage(){
-  cout << "Usage: TODO\n";
+  cout << "Trains, validates and evaluates convolutional neural networks "
+    << "for the purpose of finding faint galaxies in JPEG2000 formatted data.\n";
+
+  cout << "Arguments:\n"
+    << "\t-c,\tthe component range (inclusive) to use: 'start_component_index,final_component_index'\n"
+    << "\t-e,\twhether or not to evaluate the input using a given graph and the region to evaluate: 'x,w,y,h'\n"
+    << "\t-f,\tthe input file to use: 'filepath'\n"
+    << "\t-g,\tthe name of the graph to use: 'graph_name'\n"
+    << "\t-h,\tprints help message\n"
+    << "\t-n,\twhether or not to evaluate the input using attached Intel Movidius Neural Compute Sticks\n"
+    << "\t-d,\tthe filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: 'filepath'\n"
+    << "\t-p,\tthe port to stream data from C++ decompressor to Python3 graph manipulator on (usually 10000 or greater): 'port_number'\n"
+    << "\t-r,\tthe resolution level to use the input at (default 0): 'resolution_level'\n"
+    << "\t-t,\twhether or not to train on the input\n"
+    << "\t-u,\tprints usage statement\n"
+    << "\t-v,\twhether or not to validate supplied graph's unit inferencing\n";
 }
 
 //----------------------------------------------------------------------------//
@@ -1131,7 +1166,7 @@ int main(int argc, char **argv){
   int arg;
 
   //Run getopt loop
-  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:nuho")) != -1){
+  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:nuhd:")) != -1){
     switch(arg){
       case 'f': //Filepath to image
         JPX_FILEPATH = optarg;
@@ -1190,13 +1225,13 @@ int main(int argc, char **argv){
           //Error check component range
           if(range.size() != 2){
             //Should only be a start and end index (inclusive)
-            cout << "Error: inclusive component index range should be in the form 'a,b'\n";
+            cout << "Error: inclusive component index range should be in the form 'start_component_index,final_component_index'\n";
             return -1;
           }
           int start_component_index = range[0];
           int final_component_index = range[1];
           if(final_component_index < start_component_index){
-            cout << "Error: inclusive component index range's start index is after end index\n";
+            cout << "Error: inclusive component index range's start index is after the final index\n";
             return -1;
           }
 
@@ -1222,8 +1257,9 @@ int main(int argc, char **argv){
         print_usage();
         exit(EXIT_SUCCESS);
         break;
-      case 'o': //Output corresponding to evaluation
-        IS_OUTPUT_IMAGES = true;
+      case 'd': //Check evaluation results with truth
+        IS_CHECK = true;
+        RESULTS_FILEPATH = optarg;
         break;
       case '?':
         //getopt handles error print statements
@@ -1242,8 +1278,9 @@ int main(int argc, char **argv){
   type_flag_count += (IS_TRAIN) ? 1 : 0;
   type_flag_count += (IS_VALIDATE) ? 1 : 0;
   type_flag_count += (IS_EVALUATE) ? 1 : 0;
+  type_flag_count += (IS_CHECK) ? 1 : 0;
   if(type_flag_count != 1){
-    cout << "Error: training, validation and evaluation sessions are mutally exclusive; please pick one option\n";
+    cout << "Error: training, validation, evaluation and checking sessions are mutally exclusive; please pick one option\n";
     return -1;
   }
 
@@ -1253,7 +1290,7 @@ int main(int argc, char **argv){
   kdu_customize_errors(&pretty_cerr);
 
   //Initialise numpy arrays for converting blocks into tensors
-  cout << "Creating embedded python3 environment\n";
+  cout << "Creating embedded Python3 environment\n";
   init_embedded_python();
 
   //Create a jp2_family_src that takes a filepath as a parameter
@@ -1268,7 +1305,7 @@ int main(int argc, char **argv){
   jpx_src.open(&jp2_fam_src, true);
 
   //Create a multi-threaded processing environment
-  cout << "Creating multi-threading environment\n";
+  cout << "Creating multi-threading environment ";
   kdu_thread_env env;
   env.create();
   int num_threads = kdu_get_num_processors();
@@ -1278,6 +1315,7 @@ int main(int argc, char **argv){
                         //many as possible
     }
   }
+  cout << "(" << num_threads << " threads)\n";
 
   //Declare codestream interface to the file
   cout << "Creating codestream interface from jp2_source\n";
@@ -1302,16 +1340,15 @@ int main(int argc, char **argv){
 
   //Print statistics
   //print_statistics(codestream);
-  
+
   //TODO check resolution level is correct
 
   //Split on training/validation/evaluating
   if(IS_TRAIN || IS_VALIDATE){
     //Begin by getting labels in decompressor feedable format
     vector<label> labels;
-    load_labels_from_roid_container(jpx_src, labels);
-    int num_true_labels = labels.size();
-    cout << num_true_labels << " galaxy labels found in inclusive component range ["
+    cout << load_labels_from_roid_container(jpx_src, labels)
+      << " galaxy labels found in inclusive component range ["
       << START_COMPONENT_INDEX << ", " << FINAL_COMPONENT_INDEX << "]\n";
 
     //Get translation translation labels,
@@ -1331,6 +1368,25 @@ int main(int argc, char **argv){
   if(IS_EVALUATE){
     //Don't actually need any labels here, just get started
     evaluate(codestream, env);
+  }
+  if(IS_CHECK){
+    //Begin by getting labels in of entire file to check against
+    vector<label> labels;
+    cout << load_labels_from_roid_container(jpx_src, labels)
+      << " galaxy labels found in inclusive component range ["
+      << START_COMPONENT_INDEX << ", " << FINAL_COMPONENT_INDEX << "] "
+      << "in file at '" << JPX_FILEPATH << "'";
+
+    //Also load the galaxy locations of evaluation result as labels
+    vector<label> results;
+    if(load_results_from_file(RESULTS_FILEPATH, results){
+      //If unsuccessful read then end, otherwise announce find and compare
+      cout << results.size()
+        << " galaxy labels found in file at '" << RESULTS_FILEPATH << "'";
+
+      //Check if evaluation result is correct within a given tolerance
+      check_evaluation_results(labels, results);
+    }
   }
 
   //Destroy references

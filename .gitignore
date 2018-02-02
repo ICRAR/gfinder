@@ -30,3 +30,6 @@ graphs/*
 
 #Network logs
 logs/*
+
+#Temporary files
+tmp/*
