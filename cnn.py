@@ -157,7 +157,7 @@ def byte_string_to_int_array(bytes):
 
 #Facilitates the saving of an area of input data for comparison with evaluation
 #process
-def save_data_as_comparison_image(image_data, x, w, y, h, f):
+def save_data_as_comparison_image(image_data, x, w, y, h, f, file_name):
     #Make compatible
     image_data = make_compatible(   image_data, width=w, height=h,
                                     duplicate_channels=False)
@@ -230,9 +230,9 @@ def save_data_as_comparison_image(image_data, x, w, y, h, f):
     plt.close(fig)
 
 #Plots training statistics
-def plot_training_data( global_step_prog, loss_prog, alpha_prog,
-                        gal_acc_prog, nse_acc_prog, acc_prog,
-                        graph_name):
+def plot_training_data(global_step_prog, loss_prog, alpha_prog,
+                       gal_acc_prog, nse_acc_prog, acc_prog,
+                       graph_name):
     #Make  figure with 5 plots
     fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5)
     fig.tight_layout()
@@ -276,7 +276,7 @@ def plot_training_data( global_step_prog, loss_prog, alpha_prog,
 
 #Boots up a concurrently running client that keeps the trainable graph in memory
 #to speed up training time. Updates depending on argument at the end of its run
-def run_training_client(graph_name, port, optimise_and_save, batch_size, total_units):
+def run_training_client(graph_name, port, optimise_and_save, batch_size, total_units, file_name):
     #Connect to specified port
     print("Connecting client to port " + str(port))
     sock = socket.socket()
@@ -523,14 +523,14 @@ def softmax(arr):
 
 #Helper to process a probability map to highlight regions that most likely
 #have galaxies in them
-def post_process_prob_map(prob_map, start_x, start_y, start_f):
+def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
     #Get dimensions
     width   = prob_map.shape[0]
     height  = prob_map.shape[1]
     depth   = prob_map.shape[2]
 
     #Ignore poorly sampled edges
-    ignore_offset = 8
+    ignore_offset = 16
     prob_map[0:ignore_offset,:,:] = 0
     prob_map[(width-ignore_offset):(width),:,:] = 0
     prob_map[:,0:ignore_offset,:] = 0
@@ -540,6 +540,9 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f):
     high_prob_cutoff = 0.5
     #Require an adjacent frame to do adjacency post processing
     if depth >= 2:
+        #Announce
+        print("\t-using adjacency relationships to boost probability accuracy")
+
         #Use tmp array so as to not mutate probability map whilst reading it
         tmp_map = np.zeros([width, height, depth])
 
@@ -552,9 +555,12 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f):
                 for i in range(width):
                     for j in range(height):
                         #If a high prob pixel exists across two frames then
-                        #it is more likely to be a galaxy
+                        #it is more likely to be a galaxy. Weight edge frames
+                        #with more because they have only one adjacent frame
                         prior_prob = prob_map[i][j][prior_f]
-                        tmp_map[i][j][f] += 0.5*(1 - prob_map[i][j][f])*prior_prob
+                        mult_factor = 1 if f == depth - 1 else 0.5
+                        tmp_map[i][j][f] += mult_factor*    \
+                            (1 - prob_map[i][j][f])*prior_prob
 
             #Check the relationship with each component's following component
             #if possible
@@ -563,9 +569,12 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f):
                 for i in range(width):
                     for j in range(height):
                         #If a high prob pixel exists across two frames then
-                        #it is more likely to be a galaxy
+                        #it is more likely to be a galaxy. Weight edge frames
+                        #with more because they have only one adjacent frame
                         next_prob = prob_map[i][j][next_f]
-                        tmp_map[i][j][f] += 0.5*(1 - prob_map[i][j][f])*next_prob
+                        mult_factor = 1 if f == 0 else 0.5
+                        tmp_map[i][j][f] += mult_factor*    \
+                            (1 - prob_map[i][j][f])*next_prob
 
         #Add on probability 'boosts' calculated
         prob_map = np.add(prob_map, tmp_map)
@@ -648,8 +657,8 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f):
                 total_y += cluster[j][1]
 
             #Calc mean, this is the location of the galaxy (centre of cluster)
-            mean_x = total_x/len(cluster)
-            mean_y = total_y/len(cluster)
+            mean_x = math.floor(total_x/len(cluster))
+            mean_y = math.floor(total_y/len(cluster))
             centre = [mean_x, mean_y, f + start_f]  #Remember to scale to cube dims
             galaxy_locations.append(centre)
 
@@ -661,6 +670,41 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f):
         pass
     with open('./tmp/galaxy_locations_tmp', 'wb') as f:
         pickle.dump(galaxy_locations, f)
+
+    #Also write galaxy locations to human readable results (can be checked)
+    #from program against jpx file source. Name scheme is:
+    #file_name-components-x-w-y-h-eval_results
+    name = "file-" + os.path.basename(input_file_path) + "_comp-" + \
+            str(start_f) + "-" +                                    \
+            str(start_f + depth - 1) + "_locs-" + str(start_x) + "-" +  \
+            str(width) + "-" + str(start_y) + "-" + str(height) + ".dat"
+    try:
+        #Try to overwrite existing file if it exists
+        os.remove('./results/' + name)
+        print("\t-overwriting old results file")
+    except OSError:
+        pass
+
+    #Write in as human readable
+    print("\t-saving results to file '" + name + "'")
+    with open('./results/' + name, 'w') as f:
+        #Construct info to write
+        f.write("#file_name:        " + \
+            os.path.basename(input_file_path) + "\n")
+        f.write("#component range:  " + \
+            str(start_f) + "," + str(start_f + depth - 1) + "\n")
+        f.write("#bounds (x,w,y,h): " + \
+            str(start_x)+","+str(width)+","+str(start_y)+","+str(height) + "\n")
+        f.write("#galaxy count:     " + \
+            str(len(galaxy_locations)) + "\n")
+        f.write("#galaxy locations (x, y, f):\n")
+
+        #Write each galaxy location
+        for i in range(len(galaxy_locations)):
+            g_loc = galaxy_locations[i]
+            f.write(str(start_x + g_loc[0]) + "\t" + \
+                    str(start_y + g_loc[1]) + "\t" + \
+                    str(g_loc[2]) + "\n")   #Note this offset was added earlier
 
     #Combat coordinate system change when plotting by flipping and rotating
     prob_map = np.rot90(prob_map, axes=[0,1])
@@ -709,15 +753,16 @@ def plot_prob_map(prob_map, start_x, start_y, start_f):
 #Recieves a unit and evaluates it using the graph. This function is used for
 #development (comparisons) and not designed for use in production. Expect
 #unreliability
-def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
-                                    port,              #Port to stream from
-                                    region_width,      #Width of region to evaluate
-                                    region_height,     #Height of region to evaluate
-                                    region_depth,      #Depth of region to evaluate
-                                    units_per_component,   #How many images at each frequency
-                                    start_x,
-                                    start_y,
-                                    start_f):
+def run_evaluation_client_for_cpu(graph_name,        #Graph to evaluate on
+                                  port,              #Port to stream from
+                                  region_width,      #Width of region to evaluate
+                                  region_height,     #Height of region to evaluate
+                                  region_depth,      #Depth of region to evaluate
+                                  units_per_component,   #How many images at each frequency
+                                  start_x,
+                                  start_y,
+                                  start_f,
+                                  file_name):
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
@@ -828,7 +873,7 @@ def run_evaluation_client_for_cpu(  graph_name,        #Graph to evaluate on
                             where=sample_map!=0)
 
     #Process
-    prob_map = post_process_prob_map(prob_map, start_x, start_y, start_f)
+    prob_map = post_process_prob_map(prob_map, start_x, start_y, start_f, file_name)
 
     #Plot data or visualisation
     print("Plotting 2D component prediction map(s)")
@@ -869,9 +914,9 @@ def compile_for_ncs(graph_name):
     );
 
 #Manages te inferences on one NCS
-def run_NCS_parallel(   device_number, graph_handle, queue, utilisation,
-                        num_inferenced, num_expected,
-                        prob_ag_map, sample_map):
+def run_NCS_parallel(device_number, graph_handle, queue, utilisation,
+                     num_inferenced, num_expected,
+                     prob_ag_map, sample_map):
 
     #Has processing started
     started = False
@@ -942,15 +987,16 @@ def run_NCS_parallel(   device_number, graph_handle, queue, utilisation,
 
 #Boots up one NCS, loads a compiled version of the graph onto it and begins
 #running inferences on it. Supports inferencing a 3d area that must be supplied
-def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
-                                    port,              #Port to stream from
-                                    region_width,      #Width of region to evaluate
-                                    region_height,     #Height of region to evaluate
-                                    region_depth,      #Depth of region to evaluate
-                                    units_per_component,  #Needed to calculate expected units
-                                    start_x,
-                                    start_y,
-                                    start_f):
+def run_evaluation_client_for_ncs(graph_name,        #Graph to evaluate on
+                                  port,              #Port to stream from
+                                  region_width,      #Width of region to evaluate
+                                  region_height,     #Height of region to evaluate
+                                  region_depth,      #Depth of region to evaluate
+                                  units_per_component,  #Needed to calculate expected units
+                                  start_x,
+                                  start_y,
+                                  start_f,
+                                  file_name):
     #Ensure there is at least one NCS
     device_name_list = mvnc.EnumerateDevices()
     num_devices = len(device_name_list)
@@ -1130,7 +1176,7 @@ def run_evaluation_client_for_ncs(  graph_name,        #Graph to evaluate on
 
     #Run post processing to enhance galactic probabilites
     post_processing_start = datetime.now()
-    prob_map = post_process_prob_map(prob_map, start_x, start_y, start_f)
+    prob_map = post_process_prob_map(prob_map, start_x, start_y, start_f, file_name)
     post_processing_duration = datetime.now() - post_processing_start
     print("\t-time spent processing: " + str(post_processing_duration))
 

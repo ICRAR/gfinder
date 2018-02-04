@@ -7,8 +7,10 @@
 
 //C++ standard includes
 #include <iostream>     //For cout
-#include <sstream>      //For parsing command line arguments
+#include <sstream>      //For parsing command line arguments and other strings
+#include <fstream>      //For reading files
 #include <string>       //For xtoy conversions
+#include <string.h>     //For strlen
 #include <algorithm>    //For min
 #include <math.h>       //For ceil, pow
 #include <stdlib.h>     //For atoi and atof
@@ -44,6 +46,12 @@ using std::cout;
 using std::min;
 using std::max;
 using std::vector;
+using std::string;
+using std::ifstream;
+using std::getline;
+using std::istringstream;
+using std::ostringstream;
+using std::sort;
 
 //Input sizes of images (in pixels) to be fed to graph
 //Must reflect changes in Python file's globals
@@ -108,11 +116,61 @@ struct label{
   int f; //FREQ or z-axis coordinate of rectangle
 
   bool is_galaxy;  //Does this label represent a galaxy
+
+  //To string function for printing
+  string to_string(){
+    ostringstream total;
+
+    ostringstream xss;
+    xss << "x=[" << tlx << ", " << brx << "]";
+    total << xss.str();
+    for(int i = strlen(xss.str().c_str()); i < 16; i++){
+      total << " ";
+    }
+
+    ostringstream yss;
+    yss << "y=[" << tly << ", " << bry << "]";
+    total << yss.str();
+    for(int i = strlen(yss.str().c_str()); i < 16; i++){
+      total << " ";
+    }
+
+    ostringstream fss;
+    fss << "f=" << f;
+    total << fss.str();
+    for(int i = strlen(fss.str().c_str()); i < 8; i++){
+      total << " ";
+    }
+
+    ostringstream gss;
+    gss << "is_galaxy=" << ((is_galaxy) ? "true" : "false");
+    total << gss.str();
+
+    return total.str();
+  }
 };
 
 //----------------------------------------------------------------------------//
 // Internal functions                                                         //
 //----------------------------------------------------------------------------//
+
+//Comparator for sorting vectors of labels
+bool label_comparator(label a, label b){
+  return a.f < b.f;
+}
+
+//A helper that checks if two labels (typically an existing galaxy and a generated
+//noise label are overlapping)
+bool labels_intersect(label a, label b){
+  //tlx = left
+  //brx = right
+  //tly = top
+  //bry = bottom
+  return !( a.tlx > b.brx ||
+            a.brx < b.tlx ||
+            a.tly > b.bry ||
+            a.bry < b.tly);
+}
 
 //Loads label data from the ROI container in a jpx file. Note the jpx source
 //is taken as a refernce - this prevents a segmentation fault later when using
@@ -123,7 +181,7 @@ int load_labels_from_roid_container( jpx_source & jpx_src,
   //Get a reference to the meta manager
   jpx_meta_manager meta_manager = jpx_src.access_meta_manager();
   if(!meta_manager.exists()){
-    return;  //If file didn't have meta_manager then return
+    return -1;  //If file didn't have meta_manager then return
   }
 
   //Iterate over flattened metadata tree from the root node
@@ -210,19 +268,6 @@ int load_labels_from_roid_container( jpx_source & jpx_src,
 
   //Return the number of labels found
   return labels.size();
-}
-
-//A helper that checks if two labels (typically an existing galaxy and a generated
-//noise label are overlapping)
-bool labels_intersect(label a, label b){
-  //tlx = left
-  //brx = right
-  //tly = top
-  //bry = bottom
-  return !( a.tlx > b.brx ||
-            a.brx < b.tlx ||
-            a.tly > b.bry ||
-            a.bry < b.tly);
 }
 
 //Augments the labels supplied by translating them a given distance which is
@@ -359,7 +404,60 @@ int generate_noise_labels(vector<label> & labels){
 //Loads galaxy locations as labels from a supplied filepath and pushes them
 //to supplied-by-reference vector 'results'
 bool load_results_from_file(char * filepath, vector<label> & results){
+  //File looks like this:
+  //  #file_name:       dingo.00000.with_catalogue.jpx
+  //  #component range: 904,906
+  //  #bounds:          0,400,1400,400
+  //  #galaxy count:    6
+  //  #galaxy locations (x, y, f):
+  //  73	85	904
+  //  ...
 
+  //Open the file
+  string line;
+  ifstream f(filepath);
+  if(f.is_open()){
+    //The file was successfully opened, get lines
+    int count = 0;
+    while(getline(f, line)){
+      //First 5 lines treated differently
+      if(count < 5){
+        //Do nothing
+      }else{
+        //Read in the results, line is (x,y,f)
+        istringstream iss(line);
+        string item;
+
+        //Read into label
+        label l;
+
+        iss >> item;
+        l.tlx = atoi(item.c_str()) - INPUT_WIDTH/2;
+        l.brx = l.tlx + INPUT_WIDTH;
+
+        iss >> item;
+        l.tly = atoi(item.c_str()) - INPUT_HEIGHT/2;
+        l.bry = l.tly + INPUT_HEIGHT;
+
+        iss >> item;
+        l.f   = atoi(item.c_str());
+
+        l.is_galaxy = true; //Obviously must be a galaxy
+
+        //Add it back
+        results.push_back(l);
+      }
+
+      count++;
+    }
+
+    //Now close the file
+    f.close();
+  }else{
+    //Couldn't open the file
+    cout << "Error: cannot open file at '" << filepath << "'\n";
+    return false;
+  }
 
   //Return success
   return true;
@@ -368,7 +466,36 @@ bool load_results_from_file(char * filepath, vector<label> & results){
 //Checks if results is equal to labels within a given tolerance and reports
 //results
 void check_evaluation_results(vector<label> labels, vector<label> results){
+  //The tolerance is how far in the component range the result can be off
+  //by the label
+  int tolerance = 50;
 
+  //Track accuracy
+  int successes = 0;  //When a result is in the actual labels
+
+  //Results are sorted, but labels should be sorted for convienience
+  sort(labels.begin(), labels.end(), label_comparator);
+
+  //Iterate over the results vector and make sure there is a matching
+  //entry in labels
+  for(int r = 0; r < results.size(); r++){
+    for(int l = 0; l < labels.size(); l++){
+      //Ensure each result intersects within a given tolerance with at least one
+      //label
+      if( labels_intersect(labels[l], results[r]) &&
+          labels[l].f - tolerance <= results[r].f  &&
+          labels[l].f + tolerance >= results[r].f){
+
+        //There was an intersection, track successes
+        successes++;
+        break;
+      }
+    }
+  }
+
+  //Report results
+  cout << successes << "/" << results.size() << " predicted galaxy locations "
+    << "exist in the file's metadata\n";
 }
 
 //Prints various codestream statistics
@@ -409,7 +536,8 @@ void print_statistics(kdu_codestream codestream){
 }
 
 //Directly writes to low level structures in the file's codestream in order
-//to edit the appearance of the decoded image with respect to frequency
+//to edit the appearance of the decoded image with respect to frequency.
+//TODO: doesn't augment underlying image data (may need to write out file)
 void apply_frequency_limits(kdu_codestream codestream){
   //From the codestream, access the tile (always one codestream & one tile)
   kdu_dims main_tile_indices; main_tile_indices.size.x = main_tile_indices.size.y = 1;
@@ -629,7 +757,7 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
   npy_intp dim = w*h;
 
   //Parameters to be passed to function
-  PyObject* params = Py_BuildValue("(O, i, i, i, i, i)",
+  PyObject* params = Py_BuildValue("(O, i, i, i, i, i, s)",
     PyArray_SimpleNewFromData(
       1,
       &dim,
@@ -640,7 +768,8 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
     w,
     y,
     h,
-    f
+    f,
+    JPX_FILEPATH
   );
   PyErr_Print();
 
@@ -699,12 +828,13 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
 
     //Call function with the graph to train on and the port to listen for
     //training data on
-    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i)",
+    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, s)",
       GRAPH_NAME,
       PORT_NO,
       (IS_TRAIN ? 1 : 0),  //Whether or not to update graph
       BATCH_SIZE,
-      labels.size()
+      labels.size(),
+      JPX_FILEPATH
     ));
     PyErr_Print();
 
@@ -885,8 +1015,8 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
   //possible region is fed to the neural network graph to test if it holds a
   //galaxy. The result is crunched to find the area that most likely holds
   //a galaxy based on the results for nearby regions
-  int stride_x = 16;
-  int stride_y = 16;
+  int stride_x = INPUT_WIDTH/2;
+  int stride_y = INPUT_HEIGHT/2;
 
   //For tracking progress
   int steps_x = floor((LIMIT_RECT_W - INPUT_WIDTH)/stride_x) + 1;
@@ -935,9 +1065,9 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
     }
     PyErr_Print();
 
-    //Call function with the graph to train on and the port to listen for
+    //Call function with the graph to eval on and the port to listen for
     //training data on
-    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, i, i, i, i)",
+    PyObject_CallObject(py_func, Py_BuildValue("(s, i, i, i, i, i, i, i, i, s)",
       GRAPH_NAME,
       PORT_NO,        //Where to get data
       LIMIT_RECT_W,   //Following so python knows how big to make eval heatmap
@@ -946,7 +1076,8 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
       units_per_component,
       LIMIT_RECT_X,
       LIMIT_RECT_Y,
-      START_COMPONENT_INDEX
+      START_COMPONENT_INDEX,
+      JPX_FILEPATH
     ));
     PyErr_Print();
 
@@ -1143,15 +1274,15 @@ void print_usage(){
     << "for the purpose of finding faint galaxies in JPEG2000 formatted data.\n";
 
   cout << "Arguments:\n"
-    << "\t-c,\tthe component range (inclusive) to use: 'start_component_index,final_component_index'\n"
-    << "\t-e,\twhether or not to evaluate the input using a given graph and the region to evaluate: 'x,w,y,h'\n"
-    << "\t-f,\tthe input file to use: 'filepath'\n"
-    << "\t-g,\tthe name of the graph to use: 'graph_name'\n"
+    << "\t-c,\tthe component range (inclusive) to use: '-c start_component_index,final_component_index'\n"
+    << "\t-e,\twhether or not to evaluate the input using a given graph and the region to evaluate: '-e x,w,y,h'\n"
+    << "\t-f,\tthe input file to use: '-f filepath'\n"
+    << "\t-g,\tthe name of the graph to use: '-g graph_name'\n"
     << "\t-h,\tprints help message\n"
     << "\t-n,\twhether or not to evaluate the input using attached Intel Movidius Neural Compute Sticks\n"
-    << "\t-d,\tthe filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: 'filepath'\n"
-    << "\t-p,\tthe port to stream data from C++ decompressor to Python3 graph manipulator on (usually 10000 or greater): 'port_number'\n"
-    << "\t-r,\tthe resolution level to use the input at (default 0): 'resolution_level'\n"
+    << "\t-d,\tthe filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: '-d filepath'\n"
+    << "\t-p,\tthe port to stream data from C++ decompressor to Python3 graph manipulator on (usually 10000 or greater): '-p port_number'\n"
+    << "\t-r,\tthe resolution level to use the input at (default 0): '-r resolution_level'\n"
     << "\t-t,\twhether or not to train on the input\n"
     << "\t-u,\tprints usage statement\n"
     << "\t-v,\twhether or not to validate supplied graph's unit inferencing\n";
@@ -1375,14 +1506,14 @@ int main(int argc, char **argv){
     cout << load_labels_from_roid_container(jpx_src, labels)
       << " galaxy labels found in inclusive component range ["
       << START_COMPONENT_INDEX << ", " << FINAL_COMPONENT_INDEX << "] "
-      << "in file at '" << JPX_FILEPATH << "'";
+      << "in file at '" << JPX_FILEPATH << "'\n";
 
     //Also load the galaxy locations of evaluation result as labels
     vector<label> results;
-    if(load_results_from_file(RESULTS_FILEPATH, results){
+    if(load_results_from_file(RESULTS_FILEPATH, results)){
       //If unsuccessful read then end, otherwise announce find and compare
       cout << results.size()
-        << " galaxy labels found in file at '" << RESULTS_FILEPATH << "'";
+        << " galaxy labels found in file at '" << RESULTS_FILEPATH << "'\n";
 
       //Check if evaluation result is correct within a given tolerance
       check_evaluation_results(labels, results);
