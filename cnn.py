@@ -12,6 +12,7 @@ if not hasattr(sys, 'argv'):
 
 import shutil                               #For directory deletion
 import numpy as np                          #For transforming blocks
+import matplotlib as mpl                    #For changing rc
 import matplotlib.pyplot as plt             #For visualisation
 import matplotlib.patches as patches        #For outlining galaxies
 import pickle                               #For writing galaxy locations to tmp
@@ -59,10 +60,12 @@ INPUT_HEIGHT = 32
 #Convolutional layer filter sizes in pixels
 FILTER_SIZES    =   [5, 5, 5]
 #Number of filters in each convolutional layer
-NUM_FILTERS     =   [16, 24, 32]
+NUM_FILTERS     =   [8, 12, 16]
 #Number of neurons in fully connected (dense) layers. Final layer is added
 #on top of this
-FC_SIZES        =   [256, 48]
+FC_SIZES        =   [128, 16]
+#Standard deviation with which to initialise layer biases
+BIAS_STD_DEV_INIT   = 0.0005
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -125,7 +128,8 @@ def make_compatible(image_data,
                     save_image=False,
                     width=INPUT_WIDTH,
                     height=INPUT_HEIGHT,
-                    duplicate_channels=True):
+                    duplicate_channels=True,
+                    name="test"):
     #Reshape to placeholder dimensions
     output = np.reshape(image_data, (width, height))
 
@@ -134,7 +138,7 @@ def make_compatible(image_data,
 
     #Output an image if required while uint8
     if save_image:
-        save_array_as_fig(output, 'test')
+        save_array_as_fig(output, name)
 
     #Now cast
     output = np.float16(output)
@@ -196,13 +200,14 @@ def save_data_as_comparison_image(image_data, x, w, y, h, f, file_name):
 
     #Draw on regions of interest from tmp file
     galaxy_locations = None
-    with open('./tmp/galaxy_locations_tmp', 'rb') as file:
+    file_path = './tmp/galaxy_locations_tmp'
+    with open(file_path, 'rb') as file:
         galaxy_locations = pickle.load(file)
 
     #If didn't read correctly then report
     if galaxy_locations == None:
         print(  "Error: didn't correctly read galaxy locations from tmp file" + \
-                " when outlining in comparison image")
+                " at '" + file_path + "' when outlining in comparison image")
     else:
         #Otherwise draw rectangles on to show galaxy area
         for i in range(len(galaxy_locations)):
@@ -232,57 +237,73 @@ def save_data_as_comparison_image(image_data, x, w, y, h, f, file_name):
 #Plots training statistics
 def plot_training_data(global_step_prog, loss_prog, alpha_prog,
                        gal_acc_prog, nse_acc_prog, acc_prog,
-                       graph_name):
-    #Make  figure with 5 plots
+                       graph_name, duration):
+    #Set up new font
+    font = {'family' : 'monospace',
+            'size'   : 14}
+
+    mpl.rc('font', **font)
+
+    #Make figure with 5 plots
     fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5)
     fig.tight_layout()
-    fig.set_size_inches(15, 15)
-    plt.subplots_adjust(wspace=0.01,hspace=0.3)
+    fig.set_size_inches(17, 17)
+    plt.subplots_adjust(wspace=0.01,hspace=0.2)
 
     #Plot the gal acc
     ax1.plot(global_step_prog, gal_acc_prog, 'g-')
     ax1.set_ylim([0,100])
-    ax1.set_xlim([global_step_prog[0],global_step_prog[-1]])
+    ax1.set_xlim([global_step_prog[0], global_step_prog[-1]])
     ax1.set(ylabel='gal_acc')
+    ax1.grid(color='k', linestyle='dashed', linewidth=1)
 
     #Plot the nse acc
     ax2.plot(global_step_prog, nse_acc_prog, 'r-')
     ax2.set_ylim([0,100])
-    ax2.set_xlim([global_step_prog[0],global_step_prog[-1]])
+    ax2.set_xlim([global_step_prog[0], global_step_prog[-1]])
     ax2.set(ylabel='nse_acc')
+    ax2.grid(color='k', linestyle='dashed', linewidth=1)
 
     #Plot the total acc
     ax3.plot(global_step_prog, acc_prog, 'y-')
     ax3.set_ylim([0,100])
-    ax3.set_xlim([global_step_prog[0],global_step_prog[-1]])
+    ax3.set_xlim([global_step_prog[0], global_step_prog[-1]])
     ax3.set(ylabel='acc')
+    ax3.grid(color='k', linestyle='dashed', linewidth=1)
 
     #Plot the loss
     ax4.plot(global_step_prog, loss_prog, 'k-')
     ax4.set_ylim([0,max(loss_prog)])
-    ax4.set_xlim([global_step_prog[0],global_step_prog[-1]])
+    ax4.set_xlim([global_step_prog[0], global_step_prog[-1]])
     ax4.set(ylabel='loss')
+    ax4.grid(color='k', linestyle='dashed', linewidth=1)
 
     #Plot the alpha prog
     ax5.plot(global_step_prog, alpha_prog, 'k-')
     ax5.set_ylim([0,max(alpha_prog)])
-    ax5.set_xlim([global_step_prog[0],global_step_prog[-1]])
-    ax5.set(xlabel='global_step', ylabel='alpha')
+    ax5.set_xlim([global_step_prog[0], global_step_prog[-1]])
+    ax5.set(xlabel='global_step', ylabel='learning_rate')
+    ax5.grid(color='k', linestyle='dashed', linewidth=1)
 
     #Save image
     name =  "train_prog-" + graph_name + "-" + str(global_step_prog[0]) +  "-" \
             + str(global_step_prog[-1])
+    ax1.set_title(name + ", dur=" + str(duration))
     fig.savefig("output/" + name, dpi=80)
+
+    #Change back to old font
+    mpl.style.use('default')
 
 #Boots up a concurrently running client that keeps the trainable graph in memory
 #to speed up training time. Updates depending on argument at the end of its run
-def run_training_client(graph_name, port, optimise_and_save, batch_size, total_units, file_name):
+def run_training_client(graph_name, port, optimise_and_save, batch_size,
+                        total_units, file_name):
     #Connect to specified port
     print("Connecting client to port " + str(port))
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-    timeout = 0.5       #Timeout before cutting recv'ing loop in seconds
+    timeout = 3       #Timeout before cutting recv'ing loop in seconds
 
     #Begin a tensorflow session
     sess = tf.Session()
@@ -305,6 +326,7 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
     nse_acc_prog = []
     acc_prog     = []
     global_step_prog = []
+    start = datetime.now()
 
     #Recieve supervised data. Take 4 times as many as recieving uint32s
     #(kdu_uint32s) and convert
@@ -322,7 +344,8 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
             image_input = byte_string_to_int_array(image_bytes)
             if len(image_input) == INPUT_WIDTH*INPUT_HEIGHT:
                 #Make the image tensorflow graph compatible
-                image_batch.append(make_compatible(image_input, False))
+                image_batch.append(make_compatible( image_input,        \
+                                                    save_image=False))
             else:
                 #No data found in socket, stop recving
                 print("Error: image data not recv'd correctly, finishing early")
@@ -505,11 +528,11 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size, total_u
         print("Saving training modifications made to graph in this run")
         save_model(graph_name, sess, saver)
 
-    #Output data as images
-    print("Writing output images")
-    plot_training_data( global_step_prog, loss_prog, alpha_prog, \
-                        gal_acc_prog, nse_acc_prog, acc_prog, \
-                        graph_name)
+        #Output data as images
+        print("Writing training summary graphs")
+        plot_training_data( global_step_prog, loss_prog, alpha_prog, \
+                            gal_acc_prog, nse_acc_prog, acc_prog, \
+                            graph_name, (datetime.now() - start))
 
     #Close tensorflow session
     sess.close()
@@ -536,8 +559,6 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
     prob_map[:,0:ignore_offset,:] = 0
     prob_map[:,(height-ignore_offset):(height),:] = 0
 
-    #Increase prob for high prob areas that bleed through freq frames
-    high_prob_cutoff = 0.5
     #Require an adjacent frame to do adjacency post processing
     if depth >= 2:
         #Announce
@@ -548,6 +569,8 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
 
         #Obviously cannot do on frequency frames on edge (no adjacent)
         for f in range(0, depth):
+            #Get the standard deviation
+
             #Check the relationship with each component's prior component
             #if possible
             prior_f = f - 1
@@ -584,6 +607,16 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
     galaxy_locations = []
     for f in range(depth):
         print("\t-component " + str(f + start_f) + ":")
+        #Get the mean and std deviation of each layer to discriminate
+        mean = prob_map[:,:,f].mean()
+        std = prob_map[:,:,f].std()
+
+        #Take some std from the mean as a galaxy
+        #(very unlikely to happen randomly)
+        high_prob_cutoff = mean + 3.5*std
+
+        #Apply this cutoff to the  probability map and convert the results
+        #into coordinates in 2d space for processing
         high_prob_pixels_raw = np.where(prob_map[:,:,f] > high_prob_cutoff)
         high_prob_pixels = []
         for i in range(len(high_prob_pixels_raw[0])):
@@ -600,7 +633,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
 
         #Cluster pixels into groups
         clusters = []
-        max_dist = 128    #Neighbours deemed to be this many pixels away at max
+        max_dist = 96    #Neighbours deemed to be this many pixels away at max
         for i in range(len(high_prob_pixels)):
             #Looking at one pixel, compare with rest to make cluster
             curr_pixel = high_prob_pixels[i]
@@ -766,7 +799,7 @@ def run_evaluation_client_for_cpu(graph_name,        #Graph to evaluate on
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-    timeout = 0.5       #How many seconds to wait before finishing
+    timeout = 3       #How many seconds to wait before finishing
 
     #A session is required
     sess = tf.Session()
@@ -1089,7 +1122,7 @@ def run_evaluation_client_for_ncs(graph_name,        #Graph to evaluate on
     sock = socket.socket()
     sock.connect(('', port))
     sock.setblocking(0) #Throw an exception when out of data to read (non-blocking)
-    timeout = 0.5       #How many seconds to wait before timing out recv
+    timeout = 3       #How many seconds to wait before timing out recv
 
     #Begin inference timer and intialise other metrics
     receiving_start     = datetime.now()
@@ -1137,7 +1170,9 @@ def run_evaluation_client_for_ncs(graph_name,        #Graph to evaluate on
         queue.put([image_input, image_loc])
 
     #All images recieved from C++ server
-    receiving_duration = datetime.now() - receiving_start
+    receiving_duration = datetime.now() - receiving_start - \
+                         timedelta(seconds=timeout)
+
     print(  "\nAll image data recieved, waiting for " + str(queue.qsize()) + \
             " images to be inferenced")
 
@@ -1289,12 +1324,11 @@ def new_graph(id,             #Unique identifier for saving the graph
             strides=1,
             padding='SAME',
             use_bias=True,
-            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.0005),
+            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=BIAS_STD_DEV_INIT),
             activation=tf.nn.relu,
             trainable=True,
             name="conv_" + str(i)
         )
-
         print("\t\t" + '{:20s}'.format("-Convolutional ") + str(i) + ": " + str(layer))
 
         '''
@@ -1317,6 +1351,16 @@ def new_graph(id,             #Unique identifier for saving the graph
             )
 
         print("\t\t" + '{:20s}'.format("-Batch normal ") + str(i) + ": " + str(layer))
+
+        #Apply pooling to quarter required throughput
+        layer = tf.layers.average_pooling2d(
+            inputs=layer,
+            pool_size=2,    #2x2 pixel pool windows
+            strides=2,
+            padding='SAME',
+            name="avg_pool_" + str(i)
+        )
+        print("\t\t" + '{:20s}'.format("-Pooling ") + str(i) + ": " + str(layer))
         '''
 
     #Fully connected layers only take 1D tensors so above output must be
@@ -1335,7 +1379,7 @@ def new_graph(id,             #Unique identifier for saving the graph
             units=fc_sizes[i],
             activation=tf.nn.relu,
             use_bias=True,
-            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.0005),
+            bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=BIAS_STD_DEV_INIT),
             trainable=True,
             name="dense_" + str(i)
         )
@@ -1358,10 +1402,10 @@ def new_graph(id,             #Unique identifier for saving the graph
                 fused=True,
                 name="dense_bn_" + str(i)
             )
-
         print("\t\t" + '{:20s}'.format("-Batch normal  ") + str(i) + ": " + str(layer))
 
-    #Dropout 50% for max regularization (equal prob dist for subnets)
+    #Dropout for max regularization (equal prob dist for subnets) and
+    #to form unique representations of classes
     if training_graph:
         layer = tf.nn.dropout(layer, 0.5, name="dropout")
         print("\t\t" + '{:20s}'.format("-Dropout ") + " : " + str(layer))
@@ -1370,9 +1414,9 @@ def new_graph(id,             #Unique identifier for saving the graph
     layer = tf.layers.dense(
         inputs=layer,
         units=2,
-        activation=None,    #Note no ReLU
+        activation=None,    #Note no ReLU on output
         use_bias=True,
-        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=0.0005),
+        bias_initializer=tf.truncated_normal_initializer(mean=0, stddev=BIAS_STD_DEV_INIT),
         trainable=True,
         name="dense_final"
     )
@@ -1410,14 +1454,14 @@ def new_graph(id,             #Unique identifier for saving the graph
         #Decaying learning rate for bolder retuning
         #at the beginning of the training run and more finessed tuning at end
         global_step = tf.Variable(0, trainable=False, name="global_step")   #Incremented per batch
-        init_alpha = 0.0001
-        decay_base = 1      #alpha = alpha*decay_base^(global_step/decay_steps)
+        init_alpha  = 0.0001
+        decay_base  = 0.97      #alpha = alpha*decay_base^(global_step/decay_steps)
         decay_steps = 64
         alpha = tf.train.exponential_decay( init_alpha,
                                             global_step, decay_steps, decay_base,
                                             name='alpha')
         print("\t\t" + '{:20s}'.format("-Learning rate") + " : " + str(alpha), end="")
-        print(" [" + str(init_alpha) + "*" + str(decay_base) + "^(batch_no/" + str(decay_steps) + ")]")
+        print(" [" + str(init_alpha) + "*" + str(decay_base) + "^(global_step/" + str(decay_steps) + ")]")
 
         #Optimisation function to Optimise cross entropy will be Adam optimizer
         #(advanced gradient descent)

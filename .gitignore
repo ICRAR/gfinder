@@ -36,3 +36,6 @@ tmp/*
 
 #Evaluation results
 results/*
+
+#Bash command file for queuing
+commands

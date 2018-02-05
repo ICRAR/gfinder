@@ -1,9 +1,11 @@
 //Compile with makefile provided
 
 //For example:
-//  ./gfinder -f /media/izy/irw_ntfs_0/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,799 -p 10000
-//  ./gfinder -f /media/izy/irw_ntfs_0/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 800,899 -p 10000
-//  ./gfinder -f /media/izy/irw_ntfs_0/dingo.00000.with_catalogue.jpx -g test-graph -e 28,1489,400,400 -r 0 -c 994,994 -p 10000
+//  ./gfinder -f /media/izy/irw_ntfs_0/dingo_SN_3/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,799 -p 10000
+//  ./gfinder -f /media/izy/irw_ntfs_0/dingo_SN_3/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 800,899 -p 10000
+//  ./gfinder -f /media/izy/irw_ntfs_0/dingo_SN_3/dingo.00000.with_catalogue.jpx -g test-graph -e 28,1489,400,400 -r 0 -c 994,994 -p 10000
+//  ./gfinder -f /media/izy/irw_ntfs_0/dingo_master/dingo.00000.with_catalogue.jpx -d ./results/file-dingo.00000.with_catalogue.jpx_comp-904-906_locs-0-400-1400-400.dat
+
 
 //C++ standard includes
 #include <iostream>     //For cout
@@ -16,6 +18,8 @@
 #include <stdlib.h>     //For atoi and atof
 #include <vector>       //For vectors
 #include <unistd.h>     //For getopt
+#include <limits>       //For infinity
+#include <complex>      //For abs
 
 //IPC/networking & process management includes
 #include <sys/types.h>
@@ -41,7 +45,7 @@
 using namespace kdu_supp; //Also includes the `kdu_core' namespace
 
 //Don't want to use namespace due to fear of collisions but don't want to write
-//'std::' everywhere
+//'std::' everywhere:
 using std::cout;
 using std::min;
 using std::max;
@@ -52,6 +56,8 @@ using std::getline;
 using std::istringstream;
 using std::ostringstream;
 using std::sort;
+using std::abs;
+using std::numeric_limits;
 
 //Input sizes of images (in pixels) to be fed to graph
 //Must reflect changes in Python file's globals
@@ -62,22 +68,23 @@ const int INPUT_HEIGHT = 32;
 const int BATCH_SIZE = 32;
 
 //Global command line variables, use getopt to get the following arguments:
-char *JPX_FILEPATH    = NULL;
-bool IS_TRAIN         = false;
-bool IS_VALIDATE      = false;
-bool IS_EVALUATE      = false;
-bool IS_CHECK         = false;
-char *RESULTS_FILEPATH = NULL;
-char *GRAPH_NAME      = NULL;
+char *JPX_FILEPATH        = NULL;
+bool IS_TRAIN             = false;
+bool IS_VALIDATE          = false;
+bool IS_EVALUATE          = false;
+bool IS_CHECK             = false;
+bool PRINT_MORE           = false;
+char *RESULTS_FILEPATH    = NULL;
+char *GRAPH_NAME          = NULL;
 int START_COMPONENT_INDEX = 0;
 int FINAL_COMPONENT_INDEX = 0;
-int RESOLUTION_LEVEL  = -1;
-int LIMIT_RECT_X      = 0;
-int LIMIT_RECT_Y      = 0;
-int LIMIT_RECT_W      = 0;
-int LIMIT_RECT_H      = 0;
-int PORT_NO           = -1;
-bool NCS_EVALUATION   = false;
+int RESOLUTION_LEVEL      = -1;
+int LIMIT_RECT_X          = 0;
+int LIMIT_RECT_Y          = 0;
+int LIMIT_RECT_W          = 0;
+int LIMIT_RECT_H          = 0;
+int PORT_NO               = -1;
+bool NCS_EVALUATION       = false;
 
 
 //----------------------------------------------------------------------------//
@@ -155,12 +162,12 @@ struct label{
 //----------------------------------------------------------------------------//
 
 //Comparator for sorting vectors of labels
-bool label_comparator(label a, label b){
+bool label_frequency_comparator(label a, label b){
   return a.f < b.f;
 }
 
 //A helper that checks if two labels (typically an existing galaxy and a generated
-//noise label are overlapping)
+//noise label) are overlapping. Ignores the frequency of the labels
 bool labels_intersect(label a, label b){
   //tlx = left
   //brx = right
@@ -466,36 +473,57 @@ bool load_results_from_file(char * filepath, vector<label> & results){
 //Checks if results is equal to labels within a given tolerance and reports
 //results
 void check_evaluation_results(vector<label> labels, vector<label> results){
-  //The tolerance is how far in the component range the result can be off
-  //by the label
-  int tolerance = 50;
-
   //Track accuracy
   int successes = 0;  //When a result is in the actual labels
+  //Track the min seperation in frequency between labels and results
+  int total_freq_dist = 0;
 
-  //Results are sorted, but labels should be sorted for convienience
-  sort(labels.begin(), labels.end(), label_comparator);
+  //Results are sorted in frequency, but labels should be sorted for convienience
+  sort(labels.begin(), labels.end(), label_frequency_comparator);
 
   //Iterate over the results vector and make sure there is a matching
-  //entry in labels
+  //entry in labels. Find the label that is closest in frequency
   for(int r = 0; r < results.size(); r++){
+    //Currently no intersection so min_freq_dist is infinite and no result
+    int min_freq_dist = numeric_limits<int>::max();
+    bool found_match = false;
+
     for(int l = 0; l < labels.size(); l++){
       //Ensure each result intersects within a given tolerance with at least one
-      //label
-      if( labels_intersect(labels[l], results[r]) &&
-          labels[l].f - tolerance <= results[r].f  &&
-          labels[l].f + tolerance >= results[r].f){
+      //label. Results may intersect with many labels across frequencies - always
+      //take the closest
+      if(labels_intersect(labels[l], results[r])){
+        //A match has definitely been found
+        found_match = true;
 
-        //There was an intersection, track successes
-        successes++;
-        break;
+        //There was an intersection update if it was closer
+        int freq_dist = abs(labels[l].f - results[r].f);
+        min_freq_dist = (freq_dist < min_freq_dist) ? freq_dist : min_freq_dist;
+
+        //If freq_dist is zero then this is a 3D intersection and we're done
+        //for this loop
+        if(min_freq_dist == 0){
+          break;
+        }
       }
     }
+
+    //Track totals but don't sum inifities - that would ruin the metric
+    total_freq_dist += (found_match) ? min_freq_dist : 0;
+    successes += (found_match) ? 1 : 0;
   }
 
-  //Report results
-  cout << successes << "/" << results.size() << " predicted galaxy locations "
-    << "exist in the file's metadata\n";
+  //Report results depending on if there's a divide by zero
+  if(successes == 0){
+    cout << "No labels found that match results in file provided - perhaps "
+      << "the wrong file paths were provided\n";
+  }else{
+    cout << successes << "/" << results.size() << " predicted galaxy locations "
+      << "exist in the file's metadata ("
+      << 100*(double)successes/(double)results.size()
+      << "% accuracy) with an average separation in frequency of "
+      << (double)total_freq_dist/(double)successes << " components\n";
+  }
 }
 
 //Prints various codestream statistics
@@ -537,7 +565,8 @@ void print_statistics(kdu_codestream codestream){
 
 //Directly writes to low level structures in the file's codestream in order
 //to edit the appearance of the decoded image with respect to frequency.
-//TODO: doesn't augment underlying image data (may need to write out file)
+//TODO: doesn't augment underlying image data (may need to write out to new
+//file - slow!)
 void apply_frequency_limits(kdu_codestream codestream){
   //From the codestream, access the tile (always one codestream & one tile)
   kdu_dims main_tile_indices; main_tile_indices.size.x = main_tile_indices.size.y = 1;
@@ -1271,21 +1300,22 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
 //Called if 'h' or 'u' was called at the command line
 void print_usage(){
   cout << "Trains, validates and evaluates convolutional neural networks "
-    << "for the purpose of finding faint galaxies in JPEG2000 formatted data.\n";
+    << "for the purpose of finding faint galaxies in JPEG2000 formatted SIDCs.\n";
 
   cout << "Arguments:\n"
     << "\t-c,\tthe component range (inclusive) to use: '-c start_component_index,final_component_index'\n"
+    << "\t-d,\tthe filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: '-d filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder)\n"
     << "\t-e,\twhether or not to evaluate the input using a given graph and the region to evaluate: '-e x,w,y,h'\n"
     << "\t-f,\tthe input file to use: '-f filepath'\n"
     << "\t-g,\tthe name of the graph to use: '-g graph_name'\n"
     << "\t-h,\tprints help message\n"
+    << "\t-m,\tprints more information about input JPEG2000 formatted data\n"
     << "\t-n,\twhether or not to evaluate the input using attached Intel Movidius Neural Compute Sticks\n"
-    << "\t-d,\tthe filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: '-d filepath'\n"
     << "\t-p,\tthe port to stream data from C++ decompressor to Python3 graph manipulator on (usually 10000 or greater): '-p port_number'\n"
     << "\t-r,\tthe resolution level to use the input at (default 0): '-r resolution_level'\n"
-    << "\t-t,\twhether or not to train on the input\n"
+    << "\t-t,\twhether or not to train on the supplied input file\n"
     << "\t-u,\tprints usage statement\n"
-    << "\t-v,\twhether or not to validate supplied graph's unit inferencing\n";
+    << "\t-v,\twhether or not to validate supplied graph's unit inferencing capabilities\n";
 }
 
 //----------------------------------------------------------------------------//
@@ -1297,7 +1327,7 @@ int main(int argc, char **argv){
   int arg;
 
   //Run getopt loop
-  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:nuhd:")) != -1){
+  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:nuhd:m")) != -1){
     switch(arg){
       case 'f': //Filepath to image
         JPX_FILEPATH = optarg;
@@ -1392,6 +1422,9 @@ int main(int argc, char **argv){
         IS_CHECK = true;
         RESULTS_FILEPATH = optarg;
         break;
+      case 'm': //Prints more information about input file
+        PRINT_MORE = true;
+        break;
       case '?':
         //getopt handles error print statements
         return -1;
@@ -1469,8 +1502,10 @@ int main(int argc, char **argv){
       return -1;
   }
 
-  //Print statistics
-  //print_statistics(codestream);
+  //Print statistics if required to
+  if(PRINT_MORE){
+    print_statistics(codestream);
+  }
 
   //TODO check resolution level is correct
 
@@ -1501,19 +1536,20 @@ int main(int argc, char **argv){
     evaluate(codestream, env);
   }
   if(IS_CHECK){
-    //Begin by getting labels in of entire file to check against
+    //Begin by getting labels in of ENTIRE file to check against
+    START_COMPONENT_INDEX = 0;
+    FINAL_COMPONENT_INDEX = codestream.get_num_components() - 1;
     vector<label> labels;
     cout << load_labels_from_roid_container(jpx_src, labels)
-      << " galaxy labels found in inclusive component range ["
-      << START_COMPONENT_INDEX << ", " << FINAL_COMPONENT_INDEX << "] "
-      << "in file at '" << JPX_FILEPATH << "'\n";
+      << " labels found in file at '" << JPX_FILEPATH << "'\n";
 
     //Also load the galaxy locations of evaluation result as labels
     vector<label> results;
     if(load_results_from_file(RESULTS_FILEPATH, results)){
       //If unsuccessful read then end, otherwise announce find and compare
       cout << results.size()
-        << " galaxy labels found in file at '" << RESULTS_FILEPATH << "'\n";
+        << " results found in file at '"
+        << RESULTS_FILEPATH << "'\n";
 
       //Check if evaluation result is correct within a given tolerance
       check_evaluation_results(labels, results);
