@@ -61,11 +61,11 @@ using std::numeric_limits;
 
 //Input sizes of images (in pixels) to be fed to graph
 //Must reflect changes in Python file's globals
-const int INPUT_WIDTH = 4;
-const int INPUT_HEIGHT = 4;
+const int INPUT_WIDTH   = 16;
+const int INPUT_HEIGHT  = 16;
 
 //Number of images to feed per batch (minibatch)
-const int BATCH_SIZE = 32;
+const int BATCH_SIZE    = 32;
 
 //Global command line variables, use getopt to get the following arguments:
 char *JPX_FILEPATH        = NULL;
@@ -486,6 +486,7 @@ bool load_results_from_file(char * filepath, vector<label> & results){
 void check_evaluation_results(vector<label> labels, vector<label> results){
   //Track accuracy
   int successes = 0;  //When a result is in the actual labels
+  int failures  = 0;  //When an actual label is not in the results file
   //Track the min seperation in frequency between labels and results
   int total_freq_dist = 0;
 

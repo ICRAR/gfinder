@@ -53,12 +53,16 @@ OUTPUT_NCS_NAME = "dense_final/BiasAdd"
 SHAVES = 12 #Each NCS has 12 shave cores. Use them all
 
 #Hardcoded image input dimensions
-INPUT_WIDTH = 4
-INPUT_HEIGHT = 4
+INPUT_WIDTH = 16
+INPUT_HEIGHT = 16
+
+#How many standard deviations above the mean of the prob map does a pixel
+#cluster need to be to be considered a galaxy
+NUM_STD_DEV_ABOVE_MEAN_TO_BE_GALAXY = 1
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [3, 3, 3]
+FILTER_SIZES    =   [5, 5, 5]
 #Number of filters in each convolutional layer
 NUM_FILTERS     =   [8, 12, 16]
 #Number of neurons in fully connected (dense) layers. Final layer is added
@@ -215,11 +219,12 @@ def save_data_as_comparison_image(image_data, x, w, y, h, f, file_name):
             if galaxy_locations[i][2] != f:
                 continue
 
-            #Do 100x100 outlines to match ROI encoding in jpx file
-            gal_x = galaxy_locations[i][0] - 50
-            gal_y = galaxy_locations[i][1] - 50
-            gal_w = 100
-            gal_h = 100
+            #Do 100x100 outlines to match ROI encoding in jpx file, but
+            #dependant on input width to network
+            gal_x = galaxy_locations[i][0] - int(50*INPUT_WIDTH/32)
+            gal_y = galaxy_locations[i][1] - int(50*INPUT_WIDTH/32)
+            gal_w = int(100*INPUT_WIDTH/32)
+            gal_h = int(100*INPUT_WIDTH/32)
             rect = patches.Rectangle(   (gal_x, gal_y), gal_w, gal_h,
                                         linewidth=1,
                                         edgecolor='r',
@@ -537,10 +542,9 @@ def run_training_client(graph_name, port, optimise_and_save, batch_size,
     #Close tensorflow session
     sess.close()
 
-#Softmax is considered a large typed operation on the ncs, so a version
+#Softmax is considered a large typed operation on the NCS, so a version
 #has been implemented here
 def softmax(arr):
-    """Compute softmax values for each sets of scores in x."""
     e_arr = np.exp(arr - np.max(arr))
     return e_arr / e_arr.sum()
 
@@ -553,7 +557,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
     depth   = prob_map.shape[2]
 
     #Ignore poorly sampled edges
-    ignore_offset = INPUT_WIDTH/2
+    ignore_offset = int(INPUT_WIDTH/2)
     prob_map[0:ignore_offset,:,:] = 0
     prob_map[(width-ignore_offset):(width),:,:] = 0
     prob_map[:,0:ignore_offset,:] = 0
@@ -613,7 +617,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
 
         #Take some std from the mean as a galaxy
         #(very unlikely to happen randomly)
-        high_prob_cutoff = mean + 3.5*std
+        high_prob_cutoff = mean + NUM_STD_DEV_ABOVE_MEAN_TO_BE_GALAXY*std
 
         #Apply this cutoff to the  probability map and convert the results
         #into coordinates in 2d space for processing
@@ -675,7 +679,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
                 + str(max_dist))
 
         #Remove clusters with small number of pixels (likely just noise)
-        min_pixels = INPUT_WIDTH/2
+        min_pixels = int(INPUT_WIDTH/2)
         clusters = [c for c in clusters if len(c) > min_pixels]
         print(  "\t\t-" + str(len(clusters)) + " clusters that meet minimum number of high "\
                 + "probability pixels (" + str(min_pixels) + ")")
@@ -982,6 +986,8 @@ def run_NCS_parallel(device_number, graph_handle, queue, utilisation,
             #Load into tensor
             graph_handle.LoadTensor(data[0], "")
         except:
+            print("\nError loading region at: " + \
+                str(data[1]) + " onto NCS")
             pass
 
         #Attempt to inference data
@@ -1009,6 +1015,8 @@ def run_NCS_parallel(device_number, graph_handle, queue, utilisation,
                         loc[4]] += 1.0
 
         except:
+            print("\nError getting inference result from NCS for region: " + \
+                str(data[1]))
             pass
 
         #Increment number inferenced
