@@ -633,7 +633,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
 
         #Cluster pixels into groups
         clusters = []
-        max_dist = 96    #Neighbours deemed to be this many pixels away at max
+        max_dist = 3*(INPUT_WIDTH)    #Neighbours deemed to be this many pixels away at max
         for i in range(len(high_prob_pixels)):
             #Looking at one pixel, compare with rest to make cluster
             curr_pixel = high_prob_pixels[i]
@@ -675,7 +675,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
                 + str(max_dist))
 
         #Remove clusters with small number of pixels (likely just noise)
-        min_pixels = 32
+        min_pixels = INPUT_WIDTH
         clusters = [c for c in clusters if len(c) > min_pixels]
         print(  "\t\t-" + str(len(clusters)) + " clusters that meet minimum number of high "\
                 + "probability pixels (" + str(min_pixels) + ")")

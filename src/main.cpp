@@ -1156,6 +1156,9 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
     //spacial coordinates using kakadu decompressor
     kdu_region_decompressor decompressor;
 
+    //Use the requested discard level
+    int discard_levels = RESOLUTION_LEVEL;
+
     for(int c = START_COMPONENT_INDEX; c <= FINAL_COMPONENT_INDEX; c++){
       //For consistency
       int component_index = c;
@@ -1169,9 +1172,6 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
           region.access_size()->set_x(INPUT_WIDTH);
           region.access_pos()->set_y(y);
           region.access_size()->set_y(INPUT_HEIGHT);
-
-          //TODO: variable
-          int discard_levels = 0;
 
           //Get safe expansion factors for the decompressor
           //Safe upper bounds & minmum product returned into the following variables
@@ -1561,6 +1561,19 @@ int main(int argc, char **argv){
     train(labels, codestream, env);
   }
   if(IS_EVALUATE){
+    //Check that all is within bounds first. TODO: don't hardcode 3600x3600
+    int upper_x = 3600*(1/pow(2, RESOLUTION_LEVEL));
+    int upper_y = 3600*(1/pow(2, RESOLUTION_LEVEL));
+    if( LIMIT_RECT_X < 0 ||
+        LIMIT_RECT_X + LIMIT_RECT_W > upper_x ||
+        LIMIT_RECT_Y < 0 ||
+        LIMIT_RECT_Y + LIMIT_RECT_H > upper_y){
+          cout << "Error: cannot evaluate requested limiting rectangle because"
+            << " it lies outside of codestream bounds: 0,0," << upper_x << ","
+            << upper_y << "\n";
+          return false;
+    }
+
     //Don't actually need any labels here, just get started
     evaluate(codestream, env);
   }
