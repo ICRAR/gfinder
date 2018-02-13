@@ -553,7 +553,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
     depth   = prob_map.shape[2]
 
     #Ignore poorly sampled edges
-    ignore_offset = 16
+    ignore_offset = INPUT_WIDTH/2
     prob_map[0:ignore_offset,:,:] = 0
     prob_map[(width-ignore_offset):(width),:,:] = 0
     prob_map[:,0:ignore_offset,:] = 0
@@ -675,7 +675,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
                 + str(max_dist))
 
         #Remove clusters with small number of pixels (likely just noise)
-        min_pixels = INPUT_WIDTH
+        min_pixels = INPUT_WIDTH/2
         clusters = [c for c in clusters if len(c) > min_pixels]
         print(  "\t\t-" + str(len(clusters)) + " clusters that meet minimum number of high "\
                 + "probability pixels (" + str(min_pixels) + ")")
