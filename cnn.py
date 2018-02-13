@@ -53,12 +53,12 @@ OUTPUT_NCS_NAME = "dense_final/BiasAdd"
 SHAVES = 12 #Each NCS has 12 shave cores. Use them all
 
 #Hardcoded image input dimensions
-INPUT_WIDTH = 32
-INPUT_HEIGHT = 32
+INPUT_WIDTH = 4
+INPUT_HEIGHT = 4
 
 #Globals for creating graphs
 #Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [5, 5, 5]
+FILTER_SIZES    =   [3, 3, 3]
 #Number of filters in each convolutional layer
 NUM_FILTERS     =   [8, 12, 16]
 #Number of neurons in fully connected (dense) layers. Final layer is added
@@ -100,15 +100,15 @@ def save_array_as_fig(img_array, name, start_x=0, start_y=0):
     #Plot
     ax = plt.gca()
 
-    ax.set_xticks(np.arange(0, w, math.floor(w/10)))  #Ticks
+    ax.set_xticks(np.arange(0, w, math.ceil(w/10)))  #Ticks
     ax.set_xticks(np.arange(0, w, 1), minor = True)
     #labels
-    ax.set_xticklabels(np.arange(start_x, start_x + w, math.floor(w/10)))
+    ax.set_xticklabels(np.arange(start_x, start_x + w, math.ceil(w/10)))
 
-    ax.set_yticks(np.arange(0, h, math.floor(h/10)))
+    ax.set_yticks(np.arange(0, h, math.ceil(h/10)))
     ax.set_yticks(np.arange(0, h, 1), minor = True)
     #labels
-    ax.set_yticklabels(np.arange(start_y, start_y + h, math.floor(h/10)))
+    ax.set_yticklabels(np.arange(start_y, start_y + h, math.ceil(h/10)))
 
     #Colourisation mapped to [0,1]
     plt.imshow( np.uint8(img_array), cmap="Greys_r",

@@ -61,8 +61,8 @@ using std::numeric_limits;
 
 //Input sizes of images (in pixels) to be fed to graph
 //Must reflect changes in Python file's globals
-const int INPUT_WIDTH = 32;
-const int INPUT_HEIGHT = 32;
+const int INPUT_WIDTH = 4;
+const int INPUT_HEIGHT = 4;
 
 //Number of images to feed per batch (minibatch)
 const int BATCH_SIZE = 32;
@@ -78,7 +78,7 @@ char *RESULTS_FILEPATH    = NULL;
 char *GRAPH_NAME          = NULL;
 int START_COMPONENT_INDEX = 0;
 int FINAL_COMPONENT_INDEX = 0;
-int RESOLUTION_LEVEL      = -1;
+int RESOLUTION_LEVEL      = 0;
 int LIMIT_RECT_X          = 0;
 int LIMIT_RECT_Y          = 0;
 int LIMIT_RECT_W          = 0;
@@ -185,6 +185,9 @@ bool labels_intersect(label a, label b){
 int load_labels_from_roid_container( jpx_source & jpx_src,
                                       vector<label> & labels)
 {
+  //With different resolution levels, the scale factor will change
+  double scale_factor = 1/(pow(2, RESOLUTION_LEVEL));
+
   //Get a reference to the meta manager
   jpx_meta_manager meta_manager = jpx_src.access_meta_manager();
   if(!meta_manager.exists()){
@@ -243,10 +246,10 @@ int load_labels_from_roid_container( jpx_source & jpx_src,
           //right (v3) vertices. Note that the bounding box for the galaxy labels
           //is VERY large (100x100 pixels) so is shrunk to 30x30 pixels for
           //decompression
-          l.tlx = v1.get_x() + (100 - INPUT_WIDTH)/2;
-          l.tly = v1.get_y() + (100 - INPUT_HEIGHT)/2;
-          l.brx = v3.get_x() - (100 - INPUT_WIDTH)/2;
-          l.bry = v3.get_y() - (100 - INPUT_HEIGHT)/2;
+          l.tlx = (v1.get_x() + 50)*scale_factor - INPUT_WIDTH/2;
+          l.tly = (v1.get_y() + 50)*scale_factor - INPUT_HEIGHT/2;
+          l.brx = l.tlx + INPUT_WIDTH;
+          l.bry = l.tly + INPUT_HEIGHT;
 
           //Also need the frequency location to triangulate the roi, which can
           //be found in nlst
@@ -285,6 +288,11 @@ int load_labels_from_roid_container( jpx_source & jpx_src,
 int generate_translated_labels(vector<label> & labels,
                                 int min_trans, int max_trans, int copies)
 {
+  //Can't go lower than no translation
+  if(max_trans <= 0){
+    max_trans = 1;
+  }
+
   //Count the number generated for returning
   int num_generated = 0;
 
@@ -334,6 +342,9 @@ int generate_translated_labels(vector<label> & labels,
 int generate_noise_labels(vector<label> & labels){
   int num_generated = 0;
 
+  //Depending on resolution level, valid locations change
+  double scale_factor = 1/pow(2, RESOLUTION_LEVEL);
+
   //Range of components
   int range = FINAL_COMPONENT_INDEX - START_COMPONENT_INDEX + 1; //+1 because inclusive
   //Required number of noise labels to be found
@@ -378,10 +389,10 @@ int generate_noise_labels(vector<label> & labels){
 
         //Generate a random noise label
         label noise;
-        noise.tlx       = rand()%3599;
-        noise.tly       = rand()%3599;
-        noise.brx       = noise.tlx + w;
-        noise.bry       = noise.tly + h;
+        noise.tlx       = rand()%3599*scale_factor;
+        noise.tly       = rand()%3599*scale_factor;
+        noise.brx       = noise.tlx + INPUT_WIDTH;
+        noise.bry       = noise.tly + INPUT_HEIGHT;
         noise.is_galaxy  = false;
         noise.f         = i;
 
@@ -516,7 +527,8 @@ void check_evaluation_results(vector<label> labels, vector<label> results){
   //Report results depending on if there's a divide by zero
   if(successes == 0){
     cout << "No labels found that match results in file provided - perhaps "
-      << "the wrong file paths were provided\n";
+      << "the wrong file paths were provided or resolution level provided "
+      << "did not match the resolution level used to create this data\n";
   }else{
     cout << successes << "/" << results.size() << " predicted galaxy locations "
       << "exist in the file's metadata ("
@@ -675,8 +687,8 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
 
   int component_index = f;
 
-  //TODO: variable
-  int discard_levels = 0;
+  //For convienience
+  int discard_levels = RESOLUTION_LEVEL;
 
   //Get safe expansion factors for the decompressor
   //Safe upper bounds & minmum product returned into the following variables
@@ -905,8 +917,8 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
 
       int component_index = labels[l].f;
 
-      //TODO: variable
-      int discard_levels = 0;
+      //For convienience
+      int discard_levels = RESOLUTION_LEVEL;
 
       //Get safe expansion factors for the decompressor
       //Safe upper bounds & minmum product returned into the following variables
@@ -944,11 +956,21 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
         scale_den
       );
 
+      /*
+      //For checking if region overlaps with components
+      cout << "R " << region.pos.x << ", " << region.size.x << ", " << region.pos.y
+        << ", " << region.size.y << " |\n";
+      cout << "C " << component_dims.pos.x << ", " << component_dims.size.x
+        << ", " << component_dims.pos.y << ", " << component_dims.size.y << " |\n";
+      */
+
       //Should a region not fully be included in the image then skip to the next label
       if( region.pos.x < component_dims.pos.x ||
           region.pos.x + region.size.x > component_dims.pos.x + component_dims.size.x ||
           region.pos.y < component_dims.pos.y ||
           region.pos.y + region.size.y > component_dims.pos.y + component_dims.size.y){
+            //cout << "Label " << l << " isn't included in the component's "
+            //  << "dimensions - skipping\n";
             continue;
       }
 
@@ -1304,7 +1326,7 @@ void print_usage(){
 
   cout << "Arguments:\n"
     << "\t-c,\tthe component range (inclusive) to use: '-c start_component_index,final_component_index'\n"
-    << "\t-d,\tthe filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: '-d filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder)\n"
+    << "\t-d,\tthe filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: '-d filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched)\n"
     << "\t-e,\twhether or not to evaluate the input using a given graph and the region to evaluate: '-e x,w,y,h'\n"
     << "\t-f,\tthe input file to use: '-f filepath'\n"
     << "\t-g,\tthe name of the graph to use: '-g graph_name'\n"
@@ -1312,7 +1334,7 @@ void print_usage(){
     << "\t-m,\tprints more information about input JPEG2000 formatted data\n"
     << "\t-n,\twhether or not to evaluate the input using attached Intel Movidius Neural Compute Sticks\n"
     << "\t-p,\tthe port to stream data from C++ decompressor to Python3 graph manipulator on (usually 10000 or greater): '-p port_number'\n"
-    << "\t-r,\tthe resolution level to use the input at (default 0): '-r resolution_level'\n"
+    << "\t-r,\tthe resolution level (DWT) to use the input at (default 0): '-r resolution_level'\n"
     << "\t-t,\twhether or not to train on the supplied input file\n"
     << "\t-u,\tprints usage statement\n"
     << "\t-v,\twhether or not to validate supplied graph's unit inferencing capabilities\n";
@@ -1507,7 +1529,14 @@ int main(int argc, char **argv){
     print_statistics(codestream);
   }
 
-  //TODO check resolution level is correct
+  //Check resolution level is correct (within bounds)
+  if( RESOLUTION_LEVEL > codestream.get_min_dwt_levels()
+      || RESOLUTION_LEVEL < 0){
+    cout << "Error: specified resolution level (DWT) " << RESOLUTION_LEVEL << ", "
+      " is outside of input file's resolution level (DWT) range [0, "
+      << codestream.get_min_dwt_levels() - 1 << "], exiting\n";
+      return -1;
+  }
 
   //Split on training/validation/evaluating
   if(IS_TRAIN || IS_VALIDATE){
@@ -1519,7 +1548,7 @@ int main(int argc, char **argv){
 
     //Get translation translation labels,
     //args=orig_arr, min_trans, max_trans, copies
-    cout << generate_translated_labels(labels, 0, 12, 8)
+    cout << generate_translated_labels(labels, 0, INPUT_WIDTH/2 - 2, 8)
       << " translated labels generated\n";
 
     //Get as many false labels as true labels
