@@ -1,12 +1,5 @@
 //Compile with makefile provided
 
-//For example:
-//  ./gfinder -f /media/izy/irw_ntfs_0/dingo_SN_3/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,799 -p 10000
-//  ./gfinder -f /media/izy/irw_ntfs_0/dingo_SN_3/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 800,899 -p 10000
-//  ./gfinder -f /media/izy/irw_ntfs_0/dingo_SN_3/dingo.00000.with_catalogue.jpx -g test-graph -e 28,1489,400,400 -r 0 -c 994,994 -p 10000
-//  ./gfinder -f /media/izy/irw_ntfs_0/dingo_master/dingo.00000.with_catalogue.jpx -d ./results/file-dingo.00000.with_catalogue.jpx_comp-904-906_locs-0-400-1400-400.dat
-
-
 //C++ standard includes
 #include <iostream>     //For cout
 #include <sstream>      //For parsing command line arguments and other strings
@@ -74,11 +67,17 @@ bool IS_VALIDATE          = false;
 bool IS_EVALUATE          = false;
 bool IS_CHECK             = false;
 bool PRINT_MORE           = false;
+bool OUTPUT_ORIGINAL      = false;
+int LIMIT_RECT_X_OUT      = 0;
+int LIMIT_RECT_Y_OUT      = 0;
+int LIMIT_RECT_W_OUT      = 0;
+int LIMIT_RECT_H_OUT      = 0;
 char *RESULTS_FILEPATH    = NULL;
 char *GRAPH_NAME          = NULL;
 int START_COMPONENT_INDEX = 0;
 int FINAL_COMPONENT_INDEX = 0;
-int RESOLUTION_LEVEL      = 0;
+int DISCARD_LEVEL         = 0;
+int QUALITY_LEVEL         = INT_MAX;
 int LIMIT_RECT_X          = 0;
 int LIMIT_RECT_Y          = 0;
 int LIMIT_RECT_W          = 0;
@@ -186,7 +185,7 @@ int load_labels_from_roid_container( jpx_source & jpx_src,
                                       vector<label> & labels)
 {
   //With different resolution levels, the scale factor will change
-  double scale_factor = 1/(pow(2, RESOLUTION_LEVEL));
+  double scale_factor = 1/(pow(2, DISCARD_LEVEL));
 
   //Get a reference to the meta manager
   jpx_meta_manager meta_manager = jpx_src.access_meta_manager();
@@ -343,7 +342,7 @@ int generate_noise_labels(vector<label> & labels){
   int num_generated = 0;
 
   //Depending on resolution level, valid locations change
-  double scale_factor = 1/pow(2, RESOLUTION_LEVEL);
+  double scale_factor = 1/pow(2, DISCARD_LEVEL);
 
   //Range of components
   int range = FINAL_COMPONENT_INDEX - START_COMPONENT_INDEX + 1; //+1 because inclusive
@@ -493,6 +492,12 @@ void check_evaluation_results(vector<label> labels, vector<label> results){
   //Results are sorted in frequency, but labels should be sorted for convienience
   sort(labels.begin(), labels.end(), label_frequency_comparator);
 
+  //Highest and lowest frequency results
+  int lowest_freq = results[0].f;
+  int highest_freq = results[results.size() - 1].f;
+  int tolerance = 0;  //To combat galaxy label being only at galaxies most
+                      //intense frequency
+
   //Iterate over the results vector and make sure there is a matching
   //entry in labels. Find the label that is closest in frequency
   for(int r = 0; r < results.size(); r++){
@@ -520,9 +525,45 @@ void check_evaluation_results(vector<label> labels, vector<label> results){
       }
     }
 
+    //We'll say that outside of 40 frequency frames is unreasonable
+    //TODO: need to improve input data labelling to avoid estimates like this
+    if(min_freq_dist > 40){
+      continue;
+    }
+
     //Track totals but don't sum inifities - that would ruin the metric
     total_freq_dist += (found_match) ? min_freq_dist : 0;
     successes += (found_match) ? 1 : 0;
+  }
+
+  //Now go through all labels within freq components of the results
+  //and ensure that each label is represented in results
+  int required_labels = 0;
+  for(int l = 0; l < labels.size(); l++){
+    //Reject if too far out of results range
+    if( labels[l].f < lowest_freq - tolerance ||
+        labels[l].f > highest_freq + tolerance){
+      continue;
+    }
+    required_labels++;
+
+    //Otherwise find the matching result
+    bool found_match = false;
+    for(int r = 0; r < results.size(); r++){
+      label padded_label;
+      padded_label.tlx = labels[l].tlx - 100;
+      padded_label.tly = labels[l].tly - 100;
+      padded_label.brx = labels[l].brx + 100;
+      padded_label.bry = labels[l].bry + 100;
+
+      found_match = labels_intersect(labels[l], results[r]);
+      if(found_match){
+        break;
+      }
+    }
+
+    //If no match was found then this is a failure
+    failures += (!found_match) ? 1 : 0;
   }
 
   //Report results depending on if there's a divide by zero
@@ -536,43 +577,58 @@ void check_evaluation_results(vector<label> labels, vector<label> results){
       << 100*(double)successes/(double)results.size()
       << "% accuracy) with an average separation in frequency of "
       << (double)total_freq_dist/(double)successes << " components\n";
+    if(required_labels != 0){
+      //TODO: find way to filter S/N in metadata easily to prevent this result
+      //being spoiled
+      cout << failures << "/" << required_labels << " actual galaxy locations "
+        << "failed to be found in the results ("
+        << 100*(double)failures/(double)required_labels << "% failure)\n";
+    }else{
+      cout << "No galaxies were expected to be found (as per file metadata)\n";
+    }
   }
 }
 
 //Prints various codestream statistics
-void print_statistics(kdu_codestream codestream){
+void print_statistics(kdu_codestream codestream, bool print_comments){
   //Announce various statistics
   cout << "File statistics:\n";
 
   //Print dwt levels
-  cout << "\t-Minimum DWT   : " << codestream.get_min_dwt_levels() << " (levels)\n";
+  cout << "\t-Minimum DWT    : " << codestream.get_min_dwt_levels() << " (levels)\n";
+
+  //Print max number of available quality layers
+  cout << "\t-Quality layers : " << codestream.get_max_tile_layers() << " (layers)\n";
 
   //Print tiling
   kdu_dims tiles;
   codestream.get_valid_tiles(tiles);
-  cout << "\t-Tiling        : " << tiles.access_size()->get_x() << "x" << tiles.access_size()->get_y() << " (tiles)\n";
+  cout << "\t-Tiling         : " << tiles.access_size()->get_x() << "x" << tiles.access_size()->get_y() << " (tiles)\n";
 
   //Print number of components in image
-  cout << "\t-Components    : " << codestream.get_num_components() << "\n";
+  cout << "\t-Components     : " << codestream.get_num_components() << "\n";
 
   //Print dimensions
   kdu_dims dims;
   codestream.get_dims(0, dims, false);
-  cout << "\t-Dimensions[0] : " << dims.access_size()->get_x() << "x" << dims.access_size()->get_y() << " (px)\n";
+  cout << "\t-Dimensions[0]  : " << dims.access_size()->get_x() << "x" << dims.access_size()->get_y() << " (px)\n";
 
   //Print area
-  cout << "\t-Area[0]       : " << dims.area() << " (px)\n";
+  cout << "\t-Area[0]        : " << dims.area() << " (px)\n";
 
   //Print bit-depth
-  cout << "\t-Bit-depth[0]  : " << codestream.get_bit_depth(0, false, false) << "\n";
+  cout << "\t-Bit-depth[0]   : " << codestream.get_bit_depth(0, false, false) << "\n";
 
-  //Print codestream comments if they exist
-  kdu_codestream_comment comment;
-  comment = codestream.get_comment(comment);
-  int count = 0;
-  while(comment.exists()){
-    cout << "\t-Comment[" << count++ << "]    : " << comment.get_text() << "\n";
+  //Print code stream comments if requested
+  if(print_comments){
+    //Print codestream comments if they exist
+    kdu_codestream_comment comment;
     comment = codestream.get_comment(comment);
+    int count = 0;
+    while(comment.exists()){
+      cout << "\t-Comment[" << count++ << "]    : " << comment.get_text() << "\n";
+      comment = codestream.get_comment(comment);
+    }
   }
 }
 
@@ -673,7 +729,7 @@ void end_embedded_python(){
 
 //Simply saves a region of the input datacube as specified by parameters
 bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
-                        int x, int y, int w, int h, int f)
+                        int x, int y, int w, int h, int f, bool draw_ROIs)
 {
   //Construct a region from the given data
   kdu_dims region;
@@ -688,9 +744,6 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
 
   int component_index = f;
 
-  //For convienience
-  int discard_levels = RESOLUTION_LEVEL;
-
   //Get safe expansion factors for the decompressor
   //Safe upper bounds & minmum product returned into the following variables
   double min_prod;
@@ -700,7 +753,7 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
     codestream, //The codestream being decompressed
     NULL,  //Codestream's channel mapping (null because specifying index)
     component_index,    //Check over all components
-    discard_levels,     //DWT levels to discard (resolution reduction)
+    DISCARD_LEVEL,      //DWT levels to discard (resolution reduction)
     min_prod,
     max_x,
     max_y
@@ -722,7 +775,7 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
     codestream, //The codestream being decompressed
     NULL,       //Codestream's channel mapping (null because specifying index)
     component_index,  //Component being decompressed
-    discard_levels,   //DWT levels to discard (resolution reduction)
+    DISCARD_LEVEL,    //DWT levels to discard (resolution reduction)
     scale_num,
     scale_den
   );
@@ -752,9 +805,9 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
       codestream, //The codestream being decompressed
       NULL,  //Codestream's channel mapping (null because specifying index)
       component_index,  //Component being decompressed
-      discard_levels,   //DWT levels to discard (resolution reduction)
-      INT_MAX,    //Max quality layers
-      region,      //Region to decompress
+      DISCARD_LEVEL,   //DWT levels to discard (resolution reduction)
+      QUALITY_LEVEL,    //Max quality layers
+      region,     //Region to decompress
       scale_num,  //Expansion factors
       scale_den,
       &env        //Multi-threading environment
@@ -799,7 +852,7 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
   npy_intp dim = w*h;
 
   //Parameters to be passed to function
-  PyObject* params = Py_BuildValue("(O, i, i, i, i, i, s)",
+  PyObject* params = Py_BuildValue("(O, i, i, i, i, i, s, i)",
     PyArray_SimpleNewFromData(
       1,
       &dim,
@@ -811,7 +864,8 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
     y,
     h,
     f,
-    JPX_FILEPATH
+    JPX_FILEPATH,
+    ((draw_ROIs) ? 1 : 0)
   );
   PyErr_Print();
 
@@ -918,9 +972,6 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
 
       int component_index = labels[l].f;
 
-      //For convienience
-      int discard_levels = RESOLUTION_LEVEL;
-
       //Get safe expansion factors for the decompressor
       //Safe upper bounds & minmum product returned into the following variables
       double min_prod;
@@ -930,7 +981,7 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
         codestream, //The codestream being decompressed
         NULL,  //Codestream's channel mapping (null because specifying index)
         component_index,    //Check over all components
-        discard_levels,     //DWT levels to discard (resolution reduction)
+        DISCARD_LEVEL,     //DWT levels to discard (resolution reduction)
         min_prod,
         max_x,
         max_y
@@ -952,7 +1003,7 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
         codestream, //The codestream being decompressed
         NULL,       //Codestream's channel mapping (null because specifying index)
         component_index,  //Component being decompressed
-        discard_levels,   //DWT levels to discard (resolution reduction)
+        DISCARD_LEVEL,    //DWT levels to discard (resolution reduction)
         scale_num,
         scale_den
       );
@@ -988,8 +1039,8 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
           codestream, //The codestream being decompressed
           NULL,  //Codestream's channel mapping (null because specifying index)
           component_index,  //Component being decompressed
-          discard_levels,   //DWT levels to discard (resolution reduction)
-          INT_MAX,    //Max quality layers
+          DISCARD_LEVEL,   //DWT levels to discard (resolution reduction)
+          QUALITY_LEVEL,    //Max quality layers
           region,      //Region to decompress
           scale_num,  //Expansion factors
           scale_den,
@@ -1157,9 +1208,6 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
     //spacial coordinates using kakadu decompressor
     kdu_region_decompressor decompressor;
 
-    //Use the requested discard level
-    int discard_levels = RESOLUTION_LEVEL;
-
     for(int c = START_COMPONENT_INDEX; c <= FINAL_COMPONENT_INDEX; c++){
       //For consistency
       int component_index = c;
@@ -1183,7 +1231,7 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
             codestream, //The codestream being decompressed
             NULL,  //Codestream's channel mapping (null because specifying index)
             component_index,    //Check over all components
-            discard_levels,     //DWT levels to discard (resolution reduction)
+            DISCARD_LEVEL,      //DWT levels to discard (resolution reduction)
             min_prod,
             max_x,
             max_y
@@ -1205,7 +1253,7 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
             codestream, //The codestream being decompressed
             NULL,       //Codestream's channel mapping (null because specifying index)
             component_index,  //Component being decompressed
-            discard_levels,   //DWT levels to discard (resolution reduction)
+            DISCARD_LEVEL,    //DWT levels to discard (resolution reduction)
             scale_num,
             scale_den
           );
@@ -1232,8 +1280,8 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
               codestream, //The codestream being decompressed
               NULL,  //Codestream's channel mapping (null because specifying index)
               component_index,  //Component being decompressed
-              discard_levels,   //DWT levels to discard (resolution reduction)
-              INT_MAX,    //Max quality layers
+              DISCARD_LEVEL,    //DWT levels to discard (resolution reduction)
+              QUALITY_LEVEL,    //Max quality layers
               region,      //Region to decompress
               scale_num,  //Expansion factors
               scale_den,
@@ -1310,7 +1358,7 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
       save_data_as_image( codestream, env,
                           LIMIT_RECT_X, LIMIT_RECT_Y,
                           LIMIT_RECT_W, LIMIT_RECT_H,
-                          f);
+                          f, true);
     }
 
   }else{
@@ -1320,25 +1368,32 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
   }
 }
 
-//Called if 'h' or 'u' was called at the command line
+//Called if 'u' was called at the command line
 void print_usage(){
   cout << "Trains, validates and evaluates convolutional neural networks "
     << "for the purpose of finding faint galaxies in JPEG2000 formatted SIDCs.\n";
 
   cout << "Arguments:\n"
     << "\t-c,\tthe component range (inclusive) to use: '-c start_component_index,final_component_index'\n"
-    << "\t-d,\tthe filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: '-d filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched)\n"
+    << "\t-d,\tthe discard levels (DWT) that should be applied to input (default 0): '-d discard_level'. Use the '-m' argument to print the available discard levels in the file (Note that this will decrease the output image's width and height each by a factor of 2^discard_level)\n"
     << "\t-e,\twhether or not to evaluate the input using a given graph and the region to evaluate: '-e x,w,y,h'\n"
     << "\t-f,\tthe input file to use: '-f filepath'\n"
     << "\t-g,\tthe name of the graph to use: '-g graph_name'\n"
     << "\t-h,\tprints help message\n"
     << "\t-m,\tprints more information about input JPEG2000 formatted data\n"
     << "\t-n,\twhether or not to evaluate the input using attached Intel Movidius Neural Compute Sticks\n"
+    << "\t-o,\tthe region of the input file that should be output as a low quality PNG: '-o x,w,y,h'\n"
     << "\t-p,\tthe port to stream data from C++ decompressor to Python3 graph manipulator on (usually 10000 or greater): '-p port_number'\n"
-    << "\t-r,\tthe resolution level (DWT) to use the input at (default 0): '-r resolution_level'\n"
+    << "\t-q,\tthe quality level to limit decompressing to (default maximum): '-q quality_level'. Use the '-m' argument to print the available quality levels in the file (Note that this does not affect the output image's dimensions, only its appearance)\n"
     << "\t-t,\twhether or not to train on the supplied input file\n"
     << "\t-u,\tprints usage statement\n"
-    << "\t-v,\twhether or not to validate supplied graph's unit inferencing capabilities\n";
+    << "\t-v,\twhether or not to validate supplied graph's unit inferencing capabilities\n"
+    << "\t-x,\tthe filepath to an evaluation result that should be cross checked for differences with actual galaxy locations in input file: '-x filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched)\n";
+}
+
+//Called if 'h' was called at the command line
+void print_help(){
+  cout << "To get started, see this repository's README.md file.\n";
 }
 
 //----------------------------------------------------------------------------//
@@ -1350,7 +1405,7 @@ int main(int argc, char **argv){
   int arg;
 
   //Run getopt loop
-  while((arg = getopt(argc, argv, "f:tve:g:c:r:p:nuhd:m")) != -1){
+  while((arg = getopt(argc, argv, "f:tve:g:c:d:p:nuhx:mq:o:")) != -1){
     switch(arg){
       case 'f': //Filepath to image
         JPX_FILEPATH = optarg;
@@ -1380,7 +1435,7 @@ int main(int argc, char **argv){
           if(limit_rect.size() != 4){
             //Should only be a start and end index (inclusive)
             cout << "Error: limiting rectangle should be given in form 'x,y,w,h'\n";
-            return -1;
+            exit(EXIT_FAILURE);
           }
 
           //Set globals
@@ -1410,13 +1465,13 @@ int main(int argc, char **argv){
           if(range.size() != 2){
             //Should only be a start and end index (inclusive)
             cout << "Error: inclusive component index range should be in the form 'start_component_index,final_component_index'\n";
-            return -1;
+            exit(EXIT_FAILURE);
           }
           int start_component_index = range[0];
           int final_component_index = range[1];
           if(final_component_index < start_component_index){
             cout << "Error: inclusive component index range's start index is after the final index\n";
-            return -1;
+            exit(EXIT_FAILURE);
           }
 
           //Set global vars
@@ -1424,8 +1479,11 @@ int main(int argc, char **argv){
           FINAL_COMPONENT_INDEX = final_component_index;
           break;
         }
-      case 'r': //Resolution level to use
-        RESOLUTION_LEVEL = atoi(optarg);  //Convert to int
+      case 'd': //Discard level to use
+        DISCARD_LEVEL = atoi(optarg);  //Convert to int
+        break;
+      case 'q': //Quality level
+        QUALITY_LEVEL = atoi(optarg);
         break;
       case 'p': //Port number to IPC on;
         PORT_NO = atoi(optarg);
@@ -1433,15 +1491,46 @@ int main(int argc, char **argv){
       case 'n': //Whether or not to use a plugged in NCS (otherwise will use CPU)
         NCS_EVALUATION = true;
         break;
+      case 'o':
+        {
+          OUTPUT_ORIGINAL = true;
+
+          //Parse rectangle as comma delimited string if evaluating
+          vector<int> limit_rect_out;
+          std::stringstream ss_limit_rect_out(optarg);
+          int limit_rect_out_args;
+          while(ss_limit_rect_out >> limit_rect_out_args){
+            limit_rect_out.push_back(limit_rect_out_args);
+            if(ss_limit_rect_out.peek() == ','){
+              ss_limit_rect_out.ignore();
+            }
+          }
+
+          //Error check rectangle values
+          //TODO
+          if(limit_rect_out.size() != 4){
+            //Should only be a start and end index (inclusive)
+            cout << "Error: output region should be given in form 'x,y,w,h'\n";
+            exit(EXIT_FAILURE);
+          }
+
+          //Set globals
+          LIMIT_RECT_X_OUT = limit_rect_out[0];
+          LIMIT_RECT_Y_OUT = limit_rect_out[1];
+          LIMIT_RECT_W_OUT = limit_rect_out[2];
+          LIMIT_RECT_H_OUT = limit_rect_out[3];
+
+          break;
+        }
       case 'u': //Print usage
         print_usage();
         exit(EXIT_SUCCESS);
         break;
       case 'h': //Print help statement
-        print_usage();
+        print_help();
         exit(EXIT_SUCCESS);
         break;
-      case 'd': //Check evaluation results with truth
+      case 'x': //Check evaluation results with truth
         IS_CHECK = true;
         RESULTS_FILEPATH = optarg;
         break;
@@ -1450,12 +1539,12 @@ int main(int argc, char **argv){
         break;
       case '?':
         //getopt handles error print statements
-        return -1;
+        exit(EXIT_FAILURE);
         break;
       default:
         //Something has gone horribly wrong
         cout << "Error: getopt failed to recognise command line arguments\n";
-        return -1;
+        exit(EXIT_FAILURE);
         break;
     }
   }
@@ -1466,9 +1555,11 @@ int main(int argc, char **argv){
   type_flag_count += (IS_VALIDATE) ? 1 : 0;
   type_flag_count += (IS_EVALUATE) ? 1 : 0;
   type_flag_count += (IS_CHECK) ? 1 : 0;
-  if(type_flag_count != 1){
-    cout << "Error: training, validation, evaluation and checking sessions are mutally exclusive; please pick one option\n";
-    return -1;
+  type_flag_count += (OUTPUT_ORIGINAL) ? 1 : 0;
+  if(type_flag_count > 1){
+    cout << "Error: training, validation, evaluation, outputting and checking sessions "
+      << "are mutally exclusive; please pick one option\n";
+    exit(EXIT_FAILURE);
   }
 
   //Announce KDU core version and prepare error output
@@ -1507,13 +1598,19 @@ int main(int argc, char **argv){
   //Declare codestream interface to the file
   cout << "Creating codestream interface from jp2_source\n";
   kdu_core::kdu_codestream codestream;
-  //jpx files may have multiple codestreams, access a single codestream and feed to codestream create function
+  //jpx files may have multiple codestreams, access a single codestream and
+  //feed to codestream create function
   codestream.create(jpx_src.access_codestream(0).open_stream());
   //Set fussy to write errors with prejudice
   codestream.set_fussy();
-  //Persistence is desirable as it permits multiple accesses to the same information
-  //so new regions or resolutions of interest can be decoded at will (blocks)
+  //Persistence is desirable as it permits multiple accesses to the same
+  //information so new regions or resolutions of interest can be decoded at
+  //will. It also allows restrictions to the decompressing process
   codestream.set_persistent();
+
+  //Opening a tile to get a reliable result to later attribute reads (quality
+  //levels etc...)
+  codestream.create_tile(kdu_coords(0, 0)); //This tile MUST exist
 
   //Check that the user specified components aren't out of range now that
   //codestream is initialised
@@ -1522,22 +1619,40 @@ int main(int argc, char **argv){
     cout << "Error: specified component range [" << START_COMPONENT_INDEX << ", "
       << FINAL_COMPONENT_INDEX << "] is outside of input file's component range [0, "
       << codestream.get_num_components() - 1 << "], exiting\n";
-      return -1;
+    exit(EXIT_FAILURE);
   }
 
-  //Print statistics if required to
+  //Print statistics if required to (don't print unecessary comments)
   if(PRINT_MORE){
-    print_statistics(codestream);
+    print_statistics(codestream, false);
   }
 
   //Check resolution level is correct (within bounds)
-  if( RESOLUTION_LEVEL > codestream.get_min_dwt_levels()
-      || RESOLUTION_LEVEL < 0){
-    cout << "Error: specified resolution level (DWT) " << RESOLUTION_LEVEL << ", "
+  if( DISCARD_LEVEL > codestream.get_min_dwt_levels()
+      || DISCARD_LEVEL < 0){
+    cout << "Error: specified resolution level (DWT) " << DISCARD_LEVEL << ", "
       " is outside of input file's resolution level (DWT) range [0, "
-      << codestream.get_min_dwt_levels() - 1 << "], exiting\n";
-      return -1;
+      << codestream.get_min_dwt_levels() << "], exiting\n";
+    exit(EXIT_FAILURE);
   }
+
+  //Check quality level is correct (within bounds) if it was set from INT_MAX
+  if( QUALITY_LEVEL != INT_MAX &&
+      QUALITY_LEVEL > codestream.get_max_tile_layers()
+      || QUALITY_LEVEL < 1){
+    cout << "Error: specified quality level " << QUALITY_LEVEL << ", "
+      " is outside of input file's max quality layers range [1, "
+      << codestream.get_max_tile_layers() << "], exiting\n";
+    exit(EXIT_FAILURE);
+  }
+
+  //Can now apply restrictions based on input arguments to the codestream
+  codestream.apply_input_restrictions(
+    0, 0,           //Don't restrict components
+    DISCARD_LEVEL,  //Apply requested discard level
+    QUALITY_LEVEL,  //Apply requested quality level
+    NULL            //Don't restrict ROIs
+  );
 
   //Split on training/validation/evaluating
   if(IS_TRAIN || IS_VALIDATE){
@@ -1563,8 +1678,8 @@ int main(int argc, char **argv){
   }
   if(IS_EVALUATE){
     //Check that all is within bounds first. TODO: don't hardcode 3600x3600
-    int upper_x = 3600*(1/pow(2, RESOLUTION_LEVEL));
-    int upper_y = 3600*(1/pow(2, RESOLUTION_LEVEL));
+    int upper_x = 3600*(1/pow(2, DISCARD_LEVEL));
+    int upper_y = 3600*(1/pow(2, DISCARD_LEVEL));
     if( LIMIT_RECT_X < 0 ||
         LIMIT_RECT_X + LIMIT_RECT_W > upper_x ||
         LIMIT_RECT_Y < 0 ||
@@ -1596,6 +1711,18 @@ int main(int argc, char **argv){
 
       //Check if evaluation result is correct within a given tolerance
       check_evaluation_results(labels, results);
+    }
+  }
+  if(OUTPUT_ORIGINAL){
+    cout << "Writing output images\n";
+    for(int c = START_COMPONENT_INDEX; c <= FINAL_COMPONENT_INDEX; c++){
+      cout << "\t-processing component " << c << "\n";
+      //Simply saves a region of the input datacube as specified by parameters.
+      //Don't draw ROIs onto this image (ROI data shouldn't exist)
+      save_data_as_image( codestream, env,
+                          LIMIT_RECT_X_OUT, LIMIT_RECT_Y_OUT,
+                          LIMIT_RECT_W_OUT, LIMIT_RECT_H_OUT,
+                          c, false);
     }
   }
 

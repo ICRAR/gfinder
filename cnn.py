@@ -53,8 +53,8 @@ OUTPUT_NCS_NAME = "dense_final/BiasAdd"
 SHAVES = 12 #Each NCS has 12 shave cores. Use them all
 
 #Hardcoded image input dimensions
-INPUT_WIDTH = 16
-INPUT_HEIGHT = 16
+INPUT_WIDTH     = 16
+INPUT_HEIGHT    = 16
 
 #How many standard deviations above the mean of the prob map does a pixel
 #cluster need to be to be considered a galaxy
@@ -165,7 +165,7 @@ def byte_string_to_int_array(bytes):
 
 #Facilitates the saving of an area of input data for comparison with evaluation
 #process
-def save_data_as_comparison_image(image_data, x, w, y, h, f, file_name):
+def save_data_as_comparison_image(image_data, x, w, y, h, f, file_name, draw_ROIs):
     #Make compatible
     image_data = make_compatible(   image_data, width=w, height=h,
                                     duplicate_channels=False)
@@ -202,39 +202,40 @@ def save_data_as_comparison_image(image_data, x, w, y, h, f, file_name):
     name = str(x) + "-" + str(y)  + "-" + str(w) + "-" + \
             str(h) + "-" + str(f) + "-results"
 
-    #Draw on regions of interest from tmp file
-    galaxy_locations = None
-    file_path = './tmp/galaxy_locations_tmp'
-    with open(file_path, 'rb') as file:
-        galaxy_locations = pickle.load(file)
+    #Draw on regions of interest from tmp file if required
+    if draw_ROIs:
+        galaxy_locations = None
+        file_path = './tmp/galaxy_locations_tmp'
+        with open(file_path, 'rb') as file:
+            galaxy_locations = pickle.load(file)
 
-    #If didn't read correctly then report
-    if galaxy_locations == None:
-        print(  "Error: didn't correctly read galaxy locations from tmp file" + \
-                " at '" + file_path + "' when outlining in comparison image")
-    else:
-        #Otherwise draw rectangles on to show galaxy area
-        for i in range(len(galaxy_locations)):
-            #Ignore galaxy locations not in the frequency frame
-            if galaxy_locations[i][2] != f:
-                continue
+        #If didn't read correctly then report
+        if galaxy_locations == None:
+            print(  "Error: didn't correctly read galaxy locations from tmp file" + \
+                    " at '" + file_path + "' when outlining in comparison image")
+        else:
+            #Otherwise draw rectangles on to show galaxy area
+            for i in range(len(galaxy_locations)):
+                #Ignore galaxy locations not in the frequency frame
+                if galaxy_locations[i][2] != f:
+                    continue
 
-            #Do 100x100 outlines to match ROI encoding in jpx file, but
-            #dependant on input width to network
-            gal_x = galaxy_locations[i][0] - int(50*INPUT_WIDTH/32)
-            gal_y = galaxy_locations[i][1] - int(50*INPUT_WIDTH/32)
-            gal_w = int(100*INPUT_WIDTH/32)
-            gal_h = int(100*INPUT_WIDTH/32)
-            rect = patches.Rectangle(   (gal_x, gal_y), gal_w, gal_h,
-                                        linewidth=1,
-                                        edgecolor='r',
-                                        facecolor='none')
+                #Do 100x100 outlines to match ROI encoding in jpx file, but
+                #dependant on input width to network
+                gal_x = galaxy_locations[i][0] - int(50*INPUT_WIDTH/32)
+                gal_y = galaxy_locations[i][1] - int(50*INPUT_WIDTH/32)
+                gal_w = int(100*INPUT_WIDTH/32)
+                gal_h = int(100*INPUT_WIDTH/32)
+                rect = patches.Rectangle(   (gal_x, gal_y), gal_w, gal_h,
+                                            linewidth=1,
+                                            edgecolor='r',
+                                            facecolor='none')
 
-            #Add outline to axies
-            ax.add_patch(rect)
+                #Add outline to axies
+                ax.add_patch(rect)
 
-    #Label and save
-    fig.savefig("output/" + name)
+        #Label and save
+        fig.savefig("output/" + name)
 
     #Explicity close figure for memory usage
     plt.close(fig)

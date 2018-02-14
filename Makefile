@@ -4,8 +4,8 @@ CXX = g++
 #Compile time flags
 CFLAGS = -g
 
+#KDU compilation setup ---------------------------------------------------------
 #From Dr. Slava Kitaeff's Skuareview implementation makefile
-#KDU	--------------------------------------------------------------------------
 #Where to find the KDU core system, apps and managed folders
 KDU_PATH = ./libs/v7_8-01265L
 KDU_APPS=$(KDU_PATH)/apps
@@ -24,19 +24,19 @@ KDU_LFLAGS_TEMP = Linux-x86-64-gcc \
 									Solaris-gcc Win-x86-64
 KDU_LFLAGS = $(patsubst %, -L$(KDU_PATH)/lib/%, $(KDU_LFLAGS_TEMP)) $(KDU_LFLAGS_SIMPLE)
 
-# Use static linking to allow distribution for research purposes, previously libkdu_v78R.a libkdu_a78R.a
+# Use static linking to allow distribution for research purposes,
+#previously libkdu_v78R.a libkdu_a78R.a
 KDU_LIBS =  -lkdu_aux -lkdu
 
-#-------------------------------------------------------------------------------
-#Embedded Python	--------------------------------------------------------------
-#Where to find python installation (which should include Python.h, otherwise must
-#'sudo apt-get install python3-dev' or similar)
+#Embedded Python setup ---------------------------------------------------------
+#Where to find python installation (which should include Python.h, otherwise
+#'sudo apt-get install python3-dev' or similar and try again)
 PY_PATH = /usr/include/python3.5m
 PY_INCLUDES = -I$(PY_PATH)
 
 PY_LIBS = -lpython3.5m
 
-#-------------------------------------------------------------------------------
+#Program compilation -----------------------------------------------------------
 
 #Add all libraries to compile with reference to
 LIBS = $(KDU_LFLAGS) $(KDU_LIBS) $(PY_LIBS)

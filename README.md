@@ -43,18 +43,20 @@ Expected output:
 Trains, validates and evaluates convolutional neural networks for the purpose of finding faint galaxies in JPEG2000 formatted SIDCs.
 Arguments:
 	-c,	the component range (inclusive) to use: '-c start_component_index,final_component_index'
-	-d,	the filepath to an evaluation result that should be checked for differences with actual galaxy locations in input file: '-d filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched)
+	-d,	the discard levels (DWT) that should be applied to input (default 0): '-d discard_level'. Use the '-m' argument to print the available discard levels in the file (Note that this will decrease the output image's width and height each by a factor of 2^discard_level)
 	-e,	whether or not to evaluate the input using a given graph and the region to evaluate: '-e x,w,y,h'
 	-f,	the input file to use: '-f filepath'
 	-g,	the name of the graph to use: '-g graph_name'
 	-h,	prints help message
 	-m,	prints more information about input JPEG2000 formatted data
 	-n,	whether or not to evaluate the input using attached Intel Movidius Neural Compute Sticks
+	-o,	the region of the input file that should be output as a low quality PNG: '-o x,w,y,h'
 	-p,	the port to stream data from C++ decompressor to Python3 graph manipulator on (usually 10000 or greater): '-p port_number'
-	-r,	the resolution level (DWT) to use the input at (default 0): '-r resolution_level'
+	-q,	the quality level to limit decompressing to (default maximum): '-q quality_level'. Use the '-m' argument to print the available quality levels in the file (Note that this does not affect the output image's dimensions, only its appearance)
 	-t,	whether or not to train on the supplied input file
 	-u,	prints usage statement
 	-v,	whether or not to validate supplied graph's unit inferencing capabilities
+	-x,	the filepath to an evaluation result that should be cross checked for differences with actual galaxy locations in input file: '-x filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched)
 ```
 
 ## Usage
