@@ -4,9 +4,6 @@
 #Proprietary KDU SDK
 libs/v7_8-01265L/*
 
-#But keep gitkeeps to enforce directory folder structure
-!*/.gitkeep
-
 #Macintosh reference files
 */.DS_store
 
@@ -35,3 +32,7 @@ results/*
 
 #Bash command file for queuing
 commands
+
+#But keep gitkeeps to enforce directory folder structure
+!*/.gitkeep
+
