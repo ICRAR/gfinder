@@ -16,24 +16,20 @@ These instructions will get you a copy of the project up and running on your loc
 ```
 git clone https://github.com/Isaac-Ronald-Ward/gfinder
 ```
-
 2. Enter the directory:
 ```
 cd gfinder
 ```
-
 3. Copy your compiled version of the Kakadu SDK into the 'libs' folder. If for some reason this step cannot be completed, see step 4.
 ```
 cp /absolute/path/to/compiled/Kakadu/SDK ./libs
 ```
-
 4. Edit the supplied Makefile on line 34 to point to the location of Python3 on your local machine (this is required for the embedded Python3 operations the program uses). Line 10 can also be edited to point to the compiled Kakadu SDK in the case that step 3 could not be completed. For example:
 ```
 KDU_PATH = /absolute/path/to/compiled/Kakadu/SDK
 ...
 PY_PATH = /usr/include/python3.5m
 ```
-
 5. Make and attempt to display the program's usage string:
 ```
 make && ./gfinder -u
@@ -56,20 +52,23 @@ Arguments:
 	-t,	whether or not to train on the supplied input file
 	-u,	prints usage statement
 	-v,	whether or not to validate supplied graph's unit inferencing capabilities
-	-x,	the filepath to an evaluation result that should be cross checked for differences with actual galaxy locations in input file: '-x filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched)
+	-x,	the filepath to an evaluation result that should be cross checked for differences with actual galaxy locations in input file: '-x filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched))
 ```
+
+## Pretrained graphs
+'gfinder' comes with 9 pretrained graphs that have been trained on components 0-799 of each dingo.XX000.jpx file at varying quality layers. They are named accordingly and can be found in the 'graphs' folder. Creating a new graph with the same name as these graphs will overwrite them.
 
 ## Usage
 The three main functions of gfinder are training, validating and evaluating a convolutional neural network on JPEG2000 formatted data.
-* Begin by creating a new training graph called test graph:
+* Begin by creating a new training graph called test graph (note that this script will overwrite CNNs with the same name):
 ```
-python3 new_training_graph test-graph
+python3 new_training_graph.py test-graph
 ```
 * gfinder can now use this graph (defaultly saved to the 'graphs' folder) for training, an operation which will output training statistics to the 'output' folder:
 ```
 ./gfinder -f /data/dingo.00000.with_catalogue.jpx -g test-graph -t -r 0 -c 0,799 -p 10000
 ```
-* the trained graph can then be used for validation:
+* the trained graph can then be used for validation (note that the components used for validation are independant to the components used for training and evaluation):
 ```
 ./gfinder -f /data/dingo.00000.with_catalogue.jpx -g test-graph -v -r 0 -c 800,899 -p 10000
 ```
@@ -86,14 +85,44 @@ python3 new_training_graph test-graph
 ./gfinder -u
 ```
 * The evaluation process can be sped up if one or more NCS' are connected to the local machine using a powered USB hub if the '-n' argument is provided. It is recommended that a terminal window is opened with the command 'dmesg -w' running as the NCS' are connected to ensure a successful connection.
+* In general, creating and training a new CNN involves running the new_training_graph script
+
+## Advanced usage
+The structure of the CNN that gfinder will create/train/validate/evaluate can be altered by changing the source code in 'cnn.py' and 'src/main.cpp'. In cnn.py, lines 43 - 55 can be changed to alter the CNN's:
+* input dimensions (note any changes to this parameter must be reflected in the main.cpp file on lines 57 and 58 - remember to recompile with 'make'):
+```
+INPUT_WIDTH       = ...
+INPUT_HEIGHT      = ...
+```
+* number of convolutional layers (and the number and size of filters in them - note that the length of 'FILTER_SIZES' and 'NUM_FILTERS' must match!):
+```
+FILTER_SIZES      = [...]
+NUM_FILTERS       = [...]
+```
+* number of fully connected layers (and the number of neurons in them):
+```
+FC_SIZES          =   [...]
+```
+* filter initialisation bias:
+```
+BIAS_STD_DEV_INIT = ...
+```
+
+More advanced changes can be made by altering the 'new_graph' function but this is only recommended for users with an understanding of the TensorFlow framework.
+
+Once changes are made, the gfinder program will be unable to load CNNs created with different parameters, as the NCS doens't support loading CNN structures from TensorFlow's '.meta' files, so the structure of the CNN must be generated in the program before restoring the CNN's weights (It is recommended that the user keep track of the parameters used by each CNN if they choose to alter them).
 
 ## License
 TODO
 
 ##### Author
 [**Isaac Ronald Ward**](https://github.com/Isaac-Ronald-Ward)
+Contact: isaacronaldward@gmail.com
 
 ##### Acknowledgments
-* Dr Slava Kitaeff (KDU compilation, Skuareview compilation, supervision)
-* JT Malarecki (JPEG2000 data formatting, JPEG2000 metadata embedding)
-* International Centre for Radio Astronomy Research
+* [**Dr. Slava Kitaeff**](https://github.com/skitaeff) (KDU compilation, Skuareview compilation, supervision)
+* [**Jurek Tadek Malarecki**](https://github.com/jtmalarecki) (JPEG2000 data formatting, JPEG2000 metadata embedding)
+* [**Movidius**](https://github.com/Movidius/ncsdk)
+* [**TensorFlow**](https://github.com/tensorflow/tensorflow)
+* [**Kakadu**](http://kakadusoftware.com/)
+* [**International Centre for Radio Astronomy Research**](https://www.icrar.org/)

@@ -28,6 +28,16 @@ output/*
 #Network graphs
 graphs/*
 
+#But allow the pretrained quality graphs
+!graphs/q1
+!graphs/q3
+!graphs/q5
+!graphs/q7
+!graphs/q9
+!graphs/q11
+!graphs/q13
+!graphs/q15
+
 #Network logs
 logs/*
 

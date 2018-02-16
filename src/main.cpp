@@ -54,8 +54,8 @@ using std::numeric_limits;
 
 //Input sizes of images (in pixels) to be fed to graph
 //Must reflect changes in Python file's globals
-const int INPUT_WIDTH   = 16;
-const int INPUT_HEIGHT  = 16;
+const int INPUT_WIDTH   = 32;
+const int INPUT_HEIGHT  = 32;
 
 //Number of images to feed per batch (minibatch)
 const int BATCH_SIZE    = 32;
@@ -425,6 +425,8 @@ bool load_results_from_file(char * filepath, vector<label> & results){
   //  #file_name:       dingo.00000.with_catalogue.jpx
   //  #component range: 904,906
   //  #bounds:          0,400,1400,400
+  //  #NCS' used:       3
+  //  #time taken:      00:10:06.123547
   //  #galaxy count:    6
   //  #galaxy locations (x, y, f):
   //  73	85	904
@@ -437,8 +439,8 @@ bool load_results_from_file(char * filepath, vector<label> & results){
     //The file was successfully opened, get lines
     int count = 0;
     while(getline(f, line)){
-      //First 5 lines treated differently
-      if(count < 5){
+      //First 6 lines treated differently
+      if(count < 7){
         //Do nothing
       }else{
         //Read in the results, line is (x,y,f)
@@ -569,23 +571,32 @@ void check_evaluation_results(vector<label> labels, vector<label> results){
   //Report results depending on if there's a divide by zero
   if(successes == 0){
     cout << "No labels found that match results in file provided - perhaps "
-      << "the wrong file paths were provided or resolution level provided "
-      << "did not match the resolution level used to create this data\n";
+      << "the wrong file paths were provided or the discard level provided "
+      << "did not match the discard level used to create this data\n";
   }else{
     cout << successes << "/" << results.size() << " predicted galaxy locations "
       << "exist in the file's metadata ("
       << 100*(double)successes/(double)results.size()
       << "% accuracy) with an average separation in frequency of "
-      << (double)total_freq_dist/(double)successes << " components\n";
+      << (double)total_freq_dist/(double)successes
+      << " components (A high seperation in frequency components suggests"
+      << " that the found galaxies are matching with galaxies in far away"
+      << " frequency components, giving an incorrect result (no way around"
+      << " this as galaxies are only labelled in the frame in which they are"
+      << " most intense, so if the CNN finds them in less intense frames they"
+      << " would be marked as false positives if checked against the data"
+      << " without allowing for some shift in frequency components))\n";
+    /*
     if(required_labels != 0){
       //TODO: find way to filter S/N in metadata easily to prevent this result
-      //being spoiled
+      //being spoiled. Also this result is unreliable because
       cout << failures << "/" << required_labels << " actual galaxy locations "
         << "failed to be found in the results ("
         << 100*(double)failures/(double)required_labels << "% failure)\n";
     }else{
       cout << "No galaxies were expected to be found (as per file metadata)\n";
     }
+    */
   }
 }
 
@@ -1388,12 +1399,12 @@ void print_usage(){
     << "\t-t,\twhether or not to train on the supplied input file\n"
     << "\t-u,\tprints usage statement\n"
     << "\t-v,\twhether or not to validate supplied graph's unit inferencing capabilities\n"
-    << "\t-x,\tthe filepath to an evaluation result that should be cross checked for differences with actual galaxy locations in input file: '-x filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched)\n";
+    << "\t-x,\tthe filepath to an evaluation result that should be cross checked for differences with actual galaxy locations in input file: '-x filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched))\n";
 }
 
 //Called if 'h' was called at the command line
 void print_help(){
-  cout << "To get started, see this repository's README.md file.\n";
+  cout << "To get started, see this repository's README.md file. Use the '-u' argument to print gfinder's usage string\n";
 }
 
 //----------------------------------------------------------------------------//

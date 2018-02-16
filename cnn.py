@@ -40,6 +40,20 @@ os.environ['TF_CPP_MIN_LOG_LEVEL']='1'  #1 filters all
                                         #2 filters warnings
                                         #3 filters none
 
+#Globals for creating graphs
+#Hardcoded image input dimensions
+INPUT_WIDTH     = 32
+INPUT_HEIGHT    = 32
+#Convolutional layer filter sizes in pixels
+FILTER_SIZES    =   [5, 5, 5]
+#Number of filters in each convolutional layer
+NUM_FILTERS     =   [8, 12, 16]
+#Number of neurons in fully connected (dense) layers. Final layer is added
+#on top of this
+FC_SIZES        =   [128, 16]
+#Standard deviation with which to initialise layer biases
+BIAS_STD_DEV_INIT   = 0.0005
+
 #Global variables
 #Relative paths
 GRAPHS_FOLDER = "./graphs"
@@ -52,24 +66,9 @@ OUTPUT_CPU_NAME = "dense_final/BiasAdd"
 OUTPUT_NCS_NAME = "dense_final/BiasAdd"
 SHAVES = 12 #Each NCS has 12 shave cores. Use them all
 
-#Hardcoded image input dimensions
-INPUT_WIDTH     = 16
-INPUT_HEIGHT    = 16
-
 #How many standard deviations above the mean of the prob map does a pixel
 #cluster need to be to be considered a galaxy
-NUM_STD_DEV_ABOVE_MEAN_TO_BE_GALAXY = 1
-
-#Globals for creating graphs
-#Convolutional layer filter sizes in pixels
-FILTER_SIZES    =   [5, 5, 5]
-#Number of filters in each convolutional layer
-NUM_FILTERS     =   [8, 12, 16]
-#Number of neurons in fully connected (dense) layers. Final layer is added
-#on top of this
-FC_SIZES        =   [128, 16]
-#Standard deviation with which to initialise layer biases
-BIAS_STD_DEV_INIT   = 0.0005
+NUM_STD_DEV_ABOVE_MEAN_TO_BE_GALAXY = 4
 
 #Converts to frequency domain and applies a frequency cutoff on a numpy array
 #representing an image. Cutoff: <1 for low freq, >200 for high freq
@@ -551,7 +550,9 @@ def softmax(arr):
 
 #Helper to process a probability map to highlight regions that most likely
 #have galaxies in them
-def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
+def post_process_prob_map_and_save_results( prob_map, start_x, start_y, start_f,
+                                            input_file_path, graph_name, duration,
+                                            num_NCS_used):
     #Get dimensions
     width   = prob_map.shape[0]
     height  = prob_map.shape[1]
@@ -607,6 +608,9 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
         #Add on probability 'boosts' calculated
         prob_map = np.add(prob_map, tmp_map)
 
+    #Get range from 0-1 (it being a probability map)
+    prob_map = prob_map/np.amax(prob_map)
+
     #Apply threshold to get high likelyhood galaxy regions per component/freq
     #frame
     galaxy_locations = []
@@ -638,7 +642,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
 
         #Cluster pixels into groups
         clusters = []
-        max_dist = 3*(INPUT_WIDTH)    #Neighbours deemed to be this many pixels away at max
+        max_dist = 6*(INPUT_WIDTH)    #Neighbours deemed to be this many pixels away at max
         for i in range(len(high_prob_pixels)):
             #Looking at one pixel, compare with rest to make cluster
             curr_pixel = high_prob_pixels[i]
@@ -676,7 +680,7 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
 
             #Add cluster to list of clusters
             clusters.append(cluster)
-        print(  "\t\t-" + str(len(clusters)) + " clusters found with clustering distance of "\
+        print(  "\t\t-" + str(len(clusters))+" clusters found with clustering distance of "\
                 + str(max_dist))
 
         #Remove clusters with small number of pixels (likely just noise)
@@ -712,9 +716,9 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
     #Also write galaxy locations to human readable results (can be checked)
     #from program against jpx file source. Name scheme is:
     #file_name-components-x-w-y-h-eval_results
-    name = "file-" + os.path.basename(input_file_path) + "_comp-" + \
-            str(start_f) + "-" +                                    \
-            str(start_f + depth - 1) + "_locs-" + str(start_x) + "-" +  \
+    name = "file-" + os.path.basename(input_file_path) + "_graph-" + graph_name + \
+            "_comp-" + str(start_f) + "-" + str(start_f + depth - 1) + \
+            "_locs-" + str(start_x) + "-" +  \
             str(width) + "-" + str(start_y) + "-" + str(height) + ".dat"
     try:
         #Try to overwrite existing file if it exists
@@ -733,9 +737,13 @@ def post_process_prob_map(prob_map, start_x, start_y, start_f, input_file_path):
             str(start_f) + "," + str(start_f + depth - 1) + "\n")
         f.write("#bounds (x,w,y,h): " + \
             str(start_x)+","+str(width)+","+str(start_y)+","+str(height) + "\n")
+        f.write("#time taken:       " + \
+            str(duration) + "\n")
+        f.write("#NCS' used:        " + \
+            str(num_NCS_used) + "\n")
         f.write("#galaxy count:     " + \
             str(len(galaxy_locations)) + "\n")
-        f.write("#galaxy locations (x, y, f):\n")
+        f.write("#galaxy locations found (x, y, f):\n")
 
         #Write each galaxy location
         for i in range(len(galaxy_locations)):
@@ -911,7 +919,9 @@ def run_evaluation_client_for_cpu(graph_name,        #Graph to evaluate on
                             where=sample_map!=0)
 
     #Process
-    prob_map = post_process_prob_map(prob_map, start_x, start_y, start_f, file_name)
+    prob_map = post_process_prob_map_and_save_results(prob_map, \
+        start_x, start_y, start_f, \
+        file_name, graph_name, evaluation_duration, 0)  #Used no NCS'
 
     #Plot data or visualisation
     print("Plotting 2D component prediction map(s)")
@@ -1182,8 +1192,15 @@ def run_evaluation_client_for_ncs(graph_name,        #Graph to evaluate on
     receiving_duration = datetime.now() - receiving_start - \
                          timedelta(seconds=timeout)
 
-    print(  "\nAll image data recieved, waiting for " + str(queue.qsize()) + \
-            " images to be inferenced")
+    #Announce bottleneck
+    if queue.qsize() < 10:
+        print(  "\nDecompression process bottlenecked this inferencing run" + \
+        " (adding more NCS' will NOT increase time performance!)")
+    else:
+        print(  "\nInferencing process bottlenecked this inferencing run," + \
+        " still waiting for " + str(queue.qsize()) + \
+        " units to be inferenced (adding more NCS' will increase" + \
+        " time performance if computer can handle throughput!)")
 
     #Wait for all children to terminate
     for t in range(len(threads)):
@@ -1220,7 +1237,9 @@ def run_evaluation_client_for_ncs(graph_name,        #Graph to evaluate on
 
     #Run post processing to enhance galactic probabilites
     post_processing_start = datetime.now()
-    prob_map = post_process_prob_map(prob_map, start_x, start_y, start_f, file_name)
+    prob_map = post_process_prob_map_and_save_results(prob_map, \
+        start_x, start_y, start_f, \
+        file_name, graph_name, NCS_duration, num_devices)
     post_processing_duration = datetime.now() - post_processing_start
     print("\t-time spent processing: " + str(post_processing_duration))
 
