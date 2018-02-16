@@ -1,4 +1,4 @@
-//Compile with makefile provided
+//Compile with makefile provided. Use Doxygen to build documentation if required.
 
 //C++ standard includes
 #include <iostream>     //For cout
@@ -112,6 +112,12 @@ static kdu_message_formatter pretty_cerr(&cerr_message);
 // Internal structs                                                           //
 //----------------------------------------------------------------------------//
 
+/** Holds the information regarding one region of interest in the input file's metadata.
+ *  Encodes a rectangular region of interest by holding the rectangle's top left x and y
+ *  coordinate and bottom right x and y coordinate. It also holds the frequency that this
+ *  ROI was found at and whether or not it represents a galaxy/source (from metadata) or
+ *  noise (generated).
+ */
 struct label{
   int tlx; //RA or x-axis of top left vertex of rectangle
   int tly; //DEC or y-axis of top left vertex of rectangle
@@ -160,13 +166,21 @@ struct label{
 // Internal functions                                                         //
 //----------------------------------------------------------------------------//
 
-//Comparator for sorting vectors of labels
+/** Comparator for sorting vectors of label structs.
+ *  @param a  label to be compared
+ *  @param b  label to be compared
+ *  @return whether A is lesser than B in frequency
+ */
 bool label_frequency_comparator(label a, label b){
   return a.f < b.f;
 }
 
-//A helper that checks if two labels (typically an existing galaxy and a generated
-//noise label) are overlapping. Ignores the frequency of the labels
+/** A helper that checks if two labels (typically an existing galaxy and a generated
+  * noise label) are overlapping. Ignores the frequency of the labels
+  * @param a  label to be checked for intersection
+  * @param b  label to be checked for intersection
+  * @return whether a and b intersect (disregarding frequency)
+  */
 bool labels_intersect(label a, label b){
   //tlx = left
   //brx = right
@@ -178,9 +192,14 @@ bool labels_intersect(label a, label b){
             a.bry < b.tly);
 }
 
-//Loads label data from the ROI container in a jpx file. Note the jpx source
-//is taken as a refernce - this prevents a segmentation fault later when using
-//the jpx source with kakadu tools
+/** Loads label data from the ROI container in a jpx file. Note the jpx source
+  * is taken as a refernce - this prevents a segmentation fault later when using
+  * the jpx source with kakadu tools.
+  * @param jpx_src  KDU jpx_source object representing the input .jpx file
+  * @param labels   a vector of labels that will have the labels found in the metadata
+  * appended to it
+  * @return   the number of labels found in the metadata
+  */
 int load_labels_from_roid_container( jpx_source & jpx_src,
                                       vector<label> & labels)
 {
@@ -279,11 +298,19 @@ int load_labels_from_roid_container( jpx_source & jpx_src,
   return labels.size();
 }
 
-//Augments the labels supplied by translating them a given distance which is
-//randomly chosen between min and max supplied. Warning: the label will be
-//tagged the same as what it is copying (galaxy/not galaxy) so do not translate
-//the galaxy out of bounds. Returns number of generated labels and adds new
-//labels to original array
+/** Augments the labels supplied by translating them a given distance which is
+  * randomly chosen between min and max supplied. Warning: the label will be
+  * tagged the same as what it is copying (galaxy/not galaxy) so do not translate
+  * the galaxy out of bounds. Returns number of generated labels and adds new
+  * labels to original array.
+  * @param labels   a vector of labels (that might be returned from the
+  * 'load_labels_from_roid_container' function) that are to be augmented. Augmented labels
+  * will be appended to this vector
+  * @param min_trans  the minimum amount of translation to let the augmented copies have (in pixels)
+  * @param max_trans  the maximum amount of translation to let the augmented copies have (in pixels)
+  * @param copies   the number of augmented copies to make for each of the input labels
+  * @return  the number of augmented labels generated
+  */
 int generate_translated_labels(vector<label> & labels,
                                 int min_trans, int max_trans, int copies)
 {
@@ -336,8 +363,13 @@ int generate_translated_labels(vector<label> & labels,
   return num_generated;
 }
 
-//Creates a set of false labels. Returns how many it creates and adds new labels
-//to original array
+/** Creates a set of false labels. Returns how many it creates and adds new labels
+  * to original array.
+  * @param labels   the set of labels to balance new false labels will. New false labels will
+  * be appended to this vector
+  * @return  the number of noise/false labels that were generated (should be same as
+  * labels.size())
+  */
 int generate_noise_labels(vector<label> & labels){
   int num_generated = 0;
 
@@ -418,8 +450,12 @@ int generate_noise_labels(vector<label> & labels){
   return num_generated;
 }
 
-//Loads galaxy locations as labels from a supplied filepath and pushes them
-//to supplied-by-reference vector 'results'
+/** Loads galaxy locations as labels from a supplied filepath and pushes them
+  * to supplied-by-reference vector 'results'.
+  * @param filepath   the file path to the results file that is to be loaded
+  * @param results  a vector which will have the results appended to it (as labels)
+  * @return   whether or not the file was successfully opened
+  */
 bool load_results_from_file(char * filepath, vector<label> & results){
   //File looks like this:
   //  #file_name:       dingo.00000.with_catalogue.jpx
@@ -482,8 +518,13 @@ bool load_results_from_file(char * filepath, vector<label> & results){
   return true;
 }
 
-//Checks if results is equal to labels within a given tolerance and reports
-//results
+/** Checks if results is equal to labels within a given tolerance and reports
+  * results.
+  * @param labels   the set of labels derived from a '.jpx' file's metadata that represents
+  * the ground truth 3D locations of sources
+  * @param results  the set of labels derived fomr a results file outputted by the 'gfinder'
+  * program that represents the inferred 3D locations of sources by a CNN
+  */
 void check_evaluation_results(vector<label> labels, vector<label> results){
   //Track accuracy
   int successes = 0;  //When a result is in the actual labels
@@ -600,7 +641,11 @@ void check_evaluation_results(vector<label> labels, vector<label> results){
   }
 }
 
-//Prints various codestream statistics
+/** Prints various codestream statistics.
+  * @param codestream   KDU codestream object that represents the codestream whose statistics
+  * should be printed
+  * @param print_comments whether to print the codestream's (sometimes lengthy) comments
+  */
 void print_statistics(kdu_codestream codestream, bool print_comments){
   //Announce various statistics
   cout << "File statistics:\n";
@@ -643,10 +688,13 @@ void print_statistics(kdu_codestream codestream, bool print_comments){
   }
 }
 
-//Directly writes to low level structures in the file's codestream in order
-//to edit the appearance of the decoded image with respect to frequency.
-//TODO: doesn't augment underlying image data (may need to write out to new
-//file - slow!)
+/** Directly writes to low level structures in the file's codestream in order
+  * to edit the appearance of the decoded image with respect to frequency.
+  * TODO: doesn't augment underlying image data (may need to write out to new
+  * file - slow!)
+  * @param codestream   KDU codestream object representing the codestream that should have a
+  * frequency limit applied to it
+  */
 void apply_frequency_limits(kdu_codestream codestream){
   //From the codestream, access the tile (always one codestream & one tile)
   kdu_dims main_tile_indices; main_tile_indices.size.x = main_tile_indices.size.y = 1;
@@ -718,7 +766,8 @@ void apply_frequency_limits(kdu_codestream codestream){
   codestream.close_tiles(main_tile_indices, NULL);
 }
 
-//Initialises interpreter and numpy arrays for passing blocks to python
+/** Initialises interpreter and numpy arrays for passing blocks to python.
+  */
 void* init_embedded_python(){
   //Initialises interpreter
   Py_Initialize();
@@ -733,12 +782,23 @@ void* init_embedded_python(){
   return (void*) 1;
 }
 
-//Finalises embeeded python (closing interpreter)
+/** Finalises embeeded python (closing interpreter)
+  */
 void end_embedded_python(){
   Py_Finalize();
 }
 
-//Simply saves a region of the input datacube as specified by parameters
+/** Simply saves a region of the input datacube as specified by parameters
+  * @param codestream KDU codestream object representing the codestream which an image should
+  * be saved from
+  * @param env  KDU thread envionment object representing the (possible multithreaded)
+  * environment to use when decompressing
+  * @param x  x location of top left corner of desired output in pixel coordinates
+  * @param y  y location of top left corner of desired output in pixel coordinates
+  * @param w  width of desired output in pixels
+  * @param h  height of desired output in pixels
+  * @param f  component index of desired
+  */
 bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
                         int x, int y, int w, int h, int f, bool draw_ROIs)
 {
@@ -892,8 +952,14 @@ bool save_data_as_image(kdu_codestream codestream, kdu_thread_env & env,
   return true;
 }
 
-//Called when training a graph is specified. Note a reference to the jpx source
-//is taken - this prevents segmentation fault (same with codestream)
+/** Called when training a graph is specified. Note a reference to the jpx source
+  * is taken - this prevents segmentation fault (same with codestream).
+  * @param labels a vector containing the labels to train on
+  * @param codestream KDU codestream object representing the codestream holding the data
+  * the labels are referring to
+  * @param env  KDU thread envionment object representing the (possible multithreaded)
+  * environment to use when decompressing
+  */
 void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env){
 
   //Set up a sockets
@@ -1113,7 +1179,12 @@ void train(vector<label> labels, kdu_codestream codestream, kdu_thread_env & env
   }
 }
 
-//Called when evaluating an image is specified
+/** Called when evaluating an image is specified.
+  * @param codestream KDU codestream object representing the codestream holding the data
+  * to be evaluated
+  * @param env  KDU thread envionment object representing the (possible multithreaded)
+  * environment to use when decompressing
+  */
 void evaluate(kdu_codestream codestream, kdu_thread_env & env){
   //Quick error check, not point traversing region too small for window
   if(LIMIT_RECT_W < INPUT_WIDTH || LIMIT_RECT_H < INPUT_HEIGHT){
@@ -1379,7 +1450,8 @@ void evaluate(kdu_codestream codestream, kdu_thread_env & env){
   }
 }
 
-//Called if 'u' was called at the command line
+/** Called if 'u' was called at the command line. Prints usage string.
+  */
 void print_usage(){
   cout << "Trains, validates and evaluates convolutional neural networks "
     << "for the purpose of finding faint galaxies in JPEG2000 formatted SIDCs.\n";
@@ -1402,7 +1474,8 @@ void print_usage(){
     << "\t-x,\tthe filepath to an evaluation result that should be cross checked for differences with actual galaxy locations in input file: '-x filepath' (specifying this parameter will scan the entire input file's metadata tree, regardless of component range arguments supplied to gfinder. (Ensure that the resolution level used to generate the supplied evaluation result is matched))\n";
 }
 
-//Called if 'h' was called at the command line
+/** Called if 'h' was called at the command line. Prints help string.
+  */
 void print_help(){
   cout << "To get started, see this repository's README.md file. Use the '-u' argument to print gfinder's usage string\n";
 }
@@ -1410,6 +1483,9 @@ void print_help(){
 //----------------------------------------------------------------------------//
 // Main                                                                       //
 //----------------------------------------------------------------------------//
+
+/** Parses command line options, error checks, intiialises system for desired action.
+  */
 int main(int argc, char **argv){
   //For getopt
   int index;

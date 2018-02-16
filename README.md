@@ -116,8 +116,7 @@ Once changes are made, the gfinder program will be unable to load CNNs created w
 TODO
 
 ##### Author
-[**Isaac Ronald Ward**](https://github.com/Isaac-Ronald-Ward)
-Contact: isaacronaldward@gmail.com
+[**Isaac Ronald Ward**](https://github.com/Isaac-Ronald-Ward), contact: isaacronaldward@gmail.com
 
 ##### Acknowledgments
 * [**Dr. Slava Kitaeff**](https://github.com/skitaeff) (KDU compilation, Skuareview compilation, supervision)
