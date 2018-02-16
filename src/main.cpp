@@ -54,8 +54,8 @@ using std::numeric_limits;
 
 //Input sizes of images (in pixels) to be fed to graph
 //Must reflect changes in Python file's globals
-const int INPUT_WIDTH   = 32;
-const int INPUT_HEIGHT  = 32;
+const int INPUT_WIDTH   = 16;
+const int INPUT_HEIGHT  = 16;
 
 //Number of images to feed per batch (minibatch)
 const int BATCH_SIZE    = 32;

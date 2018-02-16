@@ -42,8 +42,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL']='1'  #1 filters all
 
 #Globals for creating graphs
 #Hardcoded image input dimensions
-INPUT_WIDTH     = 32
-INPUT_HEIGHT    = 32
+INPUT_WIDTH     = 16
+INPUT_HEIGHT    = 16
 #Convolutional layer filter sizes in pixels
 FILTER_SIZES    =   [5, 5, 5]
 #Number of filters in each convolutional layer
